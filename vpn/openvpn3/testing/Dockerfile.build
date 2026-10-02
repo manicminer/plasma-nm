@@ -1,0 +1,22 @@
+# Build/test environment for plasma-nm master (Qt >= 6.11, KF >= 6.30,
+# libplasma >= 6.7.90).  Arch "extra" only carries libplasma 6.7.5, so the
+# kde-unstable repository is enabled and the image is fully upgraded from it
+# to avoid a partial upgrade.
+FROM archlinux:latest
+
+RUN sed -i '/^\[core\]/i [kde-unstable]\nInclude = /etc/pacman.d/mirrorlist\n' /etc/pacman.conf \
+    && pacman -Syu --noconfirm --needed \
+        base-devel cmake ninja git pkgconf \
+        qt6-base qt6-declarative qt6-tools \
+        extra-cmake-modules \
+        kcoreaddons ki18n kio knotifications kservice solid kwidgetsaddons \
+        kwindowsystem kcmutils kdbusaddons kcolorscheme kcompletion kjobwidgets \
+        kconfig kguiaddons kiconthemes kitemviews knotifyconfig \
+        networkmanager-qt modemmanager-qt kirigami kirigami-addons prison \
+        kquickcharts libplasma \
+        qtkeychain-qt6 qcoro-qt6 networkmanager openssl \
+        mobile-broadband-provider-info \
+    && pacman -Scc --noconfirm
+
+ENV QT_QPA_PLATFORM=offscreen
+WORKDIR /src

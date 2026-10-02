@@ -1,0 +1,18 @@
+# plasma-nm test image: the build environment plus the openvpn3 backend's own
+# libnm plugin, so the Plasma importer tests exercise the real importer rather
+# than skipping.  Only the no-GTK plugin and its .name file are needed.
+FROM plasma-nm-env
+
+# Fonts so the rendered screenshots show text rather than tofu.
+RUN pacman -Sy --noconfirm --needed meson python ttf-dejavu noto-fonts && pacman -Scc --noconfirm
+
+COPY backend-src /backend-src
+RUN meson setup /backend-build /backend-src --prefix=/usr -Dgnome=false -Dgtk3=false \
+    && ninja -C /backend-build install \
+    && rm -rf /backend-build \
+    && test -f /usr/lib/NetworkManager/libnm-vpn-plugin-openvpn3.so \
+    && test -f /usr/lib/NetworkManager/VPN/nm-openvpn3-service.name
+
+# D-Bus EXTERNAL authentication needs an NSS identity for the test process.
+ARG TEST_UID=1000
+RUN getent passwd "$TEST_UID" || useradd --uid "$TEST_UID" --no-create-home openvpn3-test

@@ -98,6 +98,18 @@ public:
     virtual QMessageBox::StandardButtons suggestedAuthDialogButtons() const;
 
     static KPluginFactory::Result<VpnUiPlugin> loadPluginForType(QObject *parent, const QString &serviceType);
+
+    /**
+     * Every installed VPN plugin that reads @p extension, in the order they
+     * were found.
+     *
+     * More than one can claim the same one -- @c .ovpn is read by both OpenVPN
+     * and OpenVPN 3 -- and which was meant is the user's to say, so the import
+     * asks rather than taking whichever plugin happened to come back first.
+     *
+     * @param extension without the dot, as QFileInfo::suffix() gives it.
+     */
+    static QList<KPluginMetaData> pluginsForFileExtension(const QString &extension);
 };
 
 #endif // PLASMA_NM_VPN_UI_PLUGIN_H

@@ -7,6 +7,8 @@
 
 #include "vpnuiplugin.h"
 
+#include <memory>
+
 #include <KLocalizedString>
 #include <KPluginMetaData>
 
@@ -25,6 +27,24 @@ QMessageBox::StandardButtons VpnUiPlugin::suggestedAuthDialogButtons() const
 QStringList VpnUiPlugin::supportedFileExtensions() const
 {
     return {};
+}
+
+QList<KPluginMetaData> VpnUiPlugin::pluginsForFileExtension(const QString &extension)
+{
+    QList<KPluginMetaData> claiming;
+    const QList<KPluginMetaData> plugins = KPluginMetaData::findPlugins(QStringLiteral("plasma/network/vpn"));
+    for (const KPluginMetaData &metaData : plugins) {
+        const auto result = KPluginFactory::instantiatePlugin<VpnUiPlugin>(metaData);
+        if (!result) {
+            continue;
+        }
+        std::unique_ptr<VpnUiPlugin> plugin(result.plugin);
+        // The extensions are glob patterns, "*.ovpn" and the like.
+        if (plugin->supportedFileExtensions().contains(QLatin1String("*.") + extension)) {
+            claiming.append(metaData);
+        }
+    }
+    return claiming;
 }
 
 KPluginFactory::Result<VpnUiPlugin> VpnUiPlugin::loadPluginForType(QObject *parent, const QString &serviceType)
