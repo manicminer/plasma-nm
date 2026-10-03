@@ -39,6 +39,8 @@
 
 // Qt
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QInputDialog>
 #include <QMenu>
 #include <QQmlContext>
 #include <QQmlEngine>
@@ -654,34 +656,52 @@ KCMNetworkmanagement::ImportResult KCMNetworkmanagement::importVpnFile(const QSt
 #endif
     }
 
-    const QVector<KPluginMetaData> services = KPluginMetaData::findPlugins(QStringLiteral("plasma/network/vpn"));
-    for (const KPluginMetaData &service : services) {
-        const auto result = KPluginFactory::instantiatePlugin<VpnUiPlugin>(service);
+    // More than one plugin can claim the same extension -- .ovpn is read by
+    // both OpenVPN and OpenVPN 3 -- and which one the user meant is not ours
+    // to guess from the order the plugins happen to come back in.
+    const QList<KPluginMetaData> candidates = VpnUiPlugin::pluginsForFileExtension(fi.suffix());
 
-        if (!result) {
-            continue;
-        }
-
-        std::unique_ptr<VpnUiPlugin> vpnPlugin(result.plugin);
-
-        if (vpnPlugin->supportedFileExtensions().contains(ext)) {
-            qCDebug(PLASMA_NM_KCM_LOG) << "Found VPN plugin" << service.name() << ", type:" << service.value("X-NetworkManager-Services");
-
-            VpnUiPlugin::ImportResult result = vpnPlugin->importConnectionSettings(filename);
-
-            if (!result) {
-                qWarning(PLASMA_NM_KCM_LOG) << "Failed to import" << filename << result.errorMessage();
-                return ImportResult::fail(result.errorMessage());
-            }
-
-            m_handler->addConnection(result.connection());
-
-            // qCDebug(PLASMA_NM_KCM_LOG) << "Adding imported connection under id:" << conId;
-            return ImportResult::pass();
-        }
+    if (candidates.isEmpty()) {
+        return ImportResult::fail(i18n("Unknown VPN type"));
     }
 
-    return ImportResult::fail(i18n("Unknown VPN type"));
+    KPluginMetaData chosen = candidates.constFirst();
+    if (candidates.size() > 1) {
+        QStringList names;
+        names.reserve(candidates.size());
+        for (const KPluginMetaData &service : std::as_const(candidates)) {
+            names.append(service.name());
+        }
+        bool accepted = false;
+        const QString answer = QInputDialog::getItem(widget(),
+                                                     i18nc("@title:window", "Import VPN Connection"),
+                                                     i18n("More than one VPN type can read %1. Which one should it be imported as?",
+                                                          QFileInfo(filename).fileName()),
+                                                     names,
+                                                     0,
+                                                     false,
+                                                     &accepted);
+        if (!accepted) {
+            return ImportResult::fail(i18n("No VPN type was chosen"));
+        }
+        chosen = candidates.at(names.indexOf(answer));
+    }
+
+    const auto result = KPluginFactory::instantiatePlugin<VpnUiPlugin>(chosen);
+    if (!result) {
+        return ImportResult::fail(result.errorString);
+    }
+    std::unique_ptr<VpnUiPlugin> vpnPlugin(result.plugin);
+    qCDebug(PLASMA_NM_KCM_LOG) << "Importing with VPN plugin" << chosen.name() << ", type:" << chosen.value("X-NetworkManager-Services");
+
+    const VpnUiPlugin::ImportResult imported = vpnPlugin->importConnectionSettings(filename);
+    if (!imported) {
+        qWarning(PLASMA_NM_KCM_LOG) << "Failed to import" << filename << imported.errorMessage();
+        return ImportResult::fail(imported.errorMessage());
+    }
+
+    m_handler->addConnection(imported.connection());
+    return ImportResult::pass();
 }
 
 void KCMNetworkmanagement::resetSelection()

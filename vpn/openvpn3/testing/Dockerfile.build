@@ -1,0 +1,25 @@
+# Build/test environment for the release-compatible plasma-nm 6.7.5 tree.
+# Stable Arch "core"/"extra" only: no kde-unstable, no extra-testing.  The
+# 6.7.5 minimums (Qt 6.10, KF 6.26, libplasma 6.7.0) are all satisfied there,
+# so the desktop stack this is tested against is the one it ships to.
+# openconnect and qt6-webengine are Arch's own plasma-nm makedepends and are
+# installed so BUILD_OPENCONNECT builds the normal distro feature set rather
+# than silently falling back to OFF.
+FROM archlinux:latest
+
+RUN pacman -Syu --noconfirm --needed \
+        base-devel cmake ninja git pkgconf \
+        qt6-base qt6-declarative qt6-tools qt6-webengine \
+        extra-cmake-modules \
+        kcoreaddons ki18n kio knotifications kservice solid kwidgetsaddons \
+        kwindowsystem kcmutils kdbusaddons kcolorscheme kcompletion kjobwidgets \
+        kconfig kguiaddons kiconthemes kitemviews knotifyconfig \
+        kdeclarative ksvg \
+        networkmanager-qt modemmanager-qt kirigami kirigami-addons prison \
+        kquickcharts libplasma plasma-workspace \
+        qtkeychain-qt6 qcoro networkmanager openssl openconnect \
+        mobile-broadband-provider-info \
+    && pacman -Scc --noconfirm
+
+ENV QT_QPA_PLATFORM=offscreen
+WORKDIR /src

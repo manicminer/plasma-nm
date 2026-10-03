@@ -1,0 +1,410 @@
+/*
+    SPDX-FileCopyrightText: 2026 Tom Bamford <tom@bamford.io>
+
+    SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+*/
+
+#include <QDir>
+#include <QTemporaryDir>
+#include <QTest>
+
+#include "nm-openvpn3-service.h"
+#include "openvpn3importer.h"
+#include "openvpn3profile.h"
+#include "openvpn3storage.h"
+
+using namespace Qt::Literals::StringLiterals;
+
+namespace
+{
+QString dataPath(const QString &name)
+{
+    return QString::fromLatin1(OPENVPN3_TEST_DATA_DIR) + QLatin1Char('/') + name;
+}
+}
+
+/**
+ * The importer, and what it does to a connection's VPN settings.
+ *
+ * The parts that go through the openvpn3 backend's own libnm plugin only run
+ * when that plugin is installed; everything else is exercised either way.
+ */
+class Openvpn3ImportTest : public QObject
+{
+    Q_OBJECT
+
+private:
+    //! True when the openvpn3 backend's libnm plugin is available to libnm.
+    static bool backendAvailable();
+
+private Q_SLOTS:
+    void init() { Openvpn3Storage::setSecretServiceAvailability(true); }
+
+    void scopedCredentialsSurviveApply()
+    {
+        const auto imported = Openvpn3Import::fromProfileText(u"client\n<connection>\nremote example.org\nauth-user-pass\n</connection>\n"_s, u"alice"_s, u"synthetic"_s);
+        NMStringMap data, secrets;
+        QVERIFY(Openvpn3Importer::apply(imported, data, secrets));
+        QCOMPARE(data.value(u"username"_s), u"alice"_s);
+        QCOMPARE(secrets.value(u"password"_s), u"synthetic"_s);
+    }
+    void realScopedImportPreservesCredentials()
+    {
+        const auto imported = Openvpn3Importer::normalize(u"client\n<connection>\nremote example.org\n<auth-user-pass>\nalice\nsynthetic\n</auth-user-pass>\n</connection>\n"_s);
+        QVERIFY2(imported.isValid(), qPrintable(imported.errorMessage()));
+        QVERIFY(imported.needsUserPass());
+        NMStringMap data, secrets;
+        QVERIFY(Openvpn3Importer::apply(imported, data, secrets));
+        QCOMPARE(data.value(u"username"_s), u"alice"_s);
+        QCOMPARE(secrets.value(u"password"_s), u"synthetic"_s);
+    }
+
+    void applyProducesTheWalletLayout();
+    void applyKeepsAnExplicitSystemChoice();
+    void applyKeepsThePasswordStorageChoice();
+    void applyLeavesNothingBehindFromTheOldProfile();
+    void applyRefusesAnInvalidImport();
+    void applyMarksOneTimeCodesAsNeverStored();
+    void applyWithoutUserPassStoresNoPasswordKeys();
+
+    void applyStoresThePasswordWhereThePolicySays();
+    void applyNeverStoresAPasswordItWasToldNotTo();
+
+    void importInlinesEverythingTheProfileReferred();
+    void importLiftsCredentialsOutOfTheProfile();
+    void importOfAMissingFileChangesNothing();
+    void importedConnectionUsesTheSecretLayout();
+    void importedCredentialsFollowTheProfileIntoTheWallet();
+    void importedCredentialsCanBeAskedForBySystemStorage();
+
+    void normalizeEmbedsFilesAndLiftsCredentials();
+    void normalizeLeavesASelfContainedProfileAlone();
+    void normalizeRefusesWhatItCannotMakeSelfContained();
+    void normalizeLeavesNothingBehindOnDisk();
+};
+
+bool Openvpn3ImportTest::backendAvailable()
+{
+    static const bool available = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s)).isValid();
+    return available;
+}
+
+// -- apply(): pure map surgery, no backend needed -----------------------------
+
+void Openvpn3ImportTest::applyProducesTheWalletLayout()
+{
+    const auto import = Openvpn3Import::fromProfileText(u"client\nremote a.example.org\nauth-user-pass\n"_s, u"alice"_s);
+    NMStringMap data;
+    NMStringMap secrets;
+
+    QVERIFY(Openvpn3Importer::apply(import, data, secrets));
+
+    QCOMPARE(data.value(u"profile-storage"_s), u"secret"_s);
+    QCOMPARE(data.value(u"profile-flags"_s), u"1"_s);
+    QVERIFY(!data.contains(u"profile"_s));
+    QCOMPARE(Openvpn3Storage::readProfile(data, secrets), import.profile());
+    QCOMPARE(data.value(u"username"_s), u"alice"_s);
+}
+
+void Openvpn3ImportTest::applyKeepsAnExplicitSystemChoice()
+{
+    const auto import = Openvpn3Import::fromProfileText(u"client\nremote a.example.org\n"_s);
+    NMStringMap data{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"0"_s}};
+    NMStringMap secrets{{u"profile"_s, u"b2xk"_s}};
+
+    QVERIFY(Openvpn3Importer::apply(import, data, secrets));
+
+    // Reimport replaces the configuration, not the policy the user chose.
+    QCOMPARE(data.value(u"profile-flags"_s), u"0"_s);
+}
+
+void Openvpn3ImportTest::applyKeepsThePasswordStorageChoice()
+{
+    const auto import = Openvpn3Import::fromProfileText(u"client\nremote a.example.org\nauth-user-pass\n"_s);
+    NMStringMap data{{u"password-flags"_s, u"2"_s}};
+    NMStringMap secrets;
+
+    QVERIFY(Openvpn3Importer::apply(import, data, secrets));
+
+    QCOMPARE(data.value(u"password-flags"_s), u"2"_s);
+}
+
+void Openvpn3ImportTest::applyLeavesNothingBehindFromTheOldProfile()
+{
+    const auto import = Openvpn3Import::fromProfileText(u"client\nremote new.example.org\n"_s);
+    NMStringMap data{
+        {u"profile"_s, u"b2xk"_s},
+        {u"username"_s, u"bob"_s},
+        {u"cert-pass-flags"_s, u"1"_s},
+        {u"challenge-response-flags"_s, u"2"_s},
+    };
+    NMStringMap secrets{{u"password"_s, u"old"_s}, {u"cert-pass"_s, u"old"_s}};
+
+    QVERIFY(Openvpn3Importer::apply(import, data, secrets));
+
+    // The new profile needs neither, so neither is carried over.
+    QVERIFY(!data.contains(u"username"_s));
+    QVERIFY(!data.contains(u"profile"_s));
+    QVERIFY(!secrets.contains(u"password"_s));
+    QVERIFY(!secrets.contains(u"cert-pass"_s));
+}
+
+void Openvpn3ImportTest::applyRefusesAnInvalidImport()
+{
+    const Openvpn3Import import; // as returned by a failed fromFile()
+    NMStringMap data{{u"profile"_s, u"b2xk"_s}};
+    NMStringMap secrets{{u"password"_s, u"pw"_s}};
+    const NMStringMap dataBefore = data;
+    const NMStringMap secretsBefore = secrets;
+
+    QVERIFY(!Openvpn3Importer::apply(import, data, secrets));
+
+    QCOMPARE(data, dataBefore);
+    QCOMPARE(secrets, secretsBefore);
+}
+
+void Openvpn3ImportTest::applyMarksOneTimeCodesAsNeverStored()
+{
+    const auto import = Openvpn3Import::fromProfileText(u"client\nremote a.example.org\nauth-user-pass\nstatic-challenge \"PIN\" 1\n"_s);
+    NMStringMap data;
+    NMStringMap secrets;
+
+    QVERIFY(Openvpn3Importer::apply(import, data, secrets));
+
+    QCOMPARE(data.value(u"challenge-response-flags"_s), QString::number(NetworkManager::Setting::NotSaved));
+    QVERIFY(!secrets.contains(u"challenge-response"_s));
+}
+
+void Openvpn3ImportTest::applyWithoutUserPassStoresNoPasswordKeys()
+{
+    const auto import = Openvpn3Import::fromProfileText(u"client\nremote a.example.org\n"_s);
+    NMStringMap data;
+    NMStringMap secrets;
+
+    QVERIFY(Openvpn3Importer::apply(import, data, secrets));
+
+    QVERIFY(!data.contains(u"password-flags"_s));
+    QVERIFY(!data.contains(u"username"_s));
+}
+
+void Openvpn3ImportTest::applyStoresThePasswordWhereThePolicySays()
+{
+    const auto import = Openvpn3Import::fromProfileText(u"client\nremote a.example.org\nauth-user-pass\n"_s, u"alice"_s, u"pw"_s);
+    NMStringMap data;
+    NMStringMap secrets;
+
+    Openvpn3Policy policy;
+    policy.profileFlags = NetworkManager::Setting::None;
+    policy.passwordFlags = NetworkManager::Setting::None;
+    QVERIFY(Openvpn3Importer::apply(import, data, secrets, policy));
+
+    // The connection was told to keep both for all users, and does.
+    QCOMPARE(data.value(u"profile-flags"_s), u"0"_s);
+    QCOMPARE(data.value(u"password-flags"_s), u"0"_s);
+    QCOMPARE(secrets.value(u"password"_s), u"pw"_s);
+}
+
+void Openvpn3ImportTest::applyNeverStoresAPasswordItWasToldNotTo()
+{
+    const auto import = Openvpn3Import::fromProfileText(u"client\nremote a.example.org\nauth-user-pass\n"_s, u"alice"_s, u"pw"_s);
+    NMStringMap data;
+    NMStringMap secrets;
+
+    Openvpn3Policy policy;
+    policy.passwordFlags = NetworkManager::Setting::NotSaved;
+    QVERIFY(Openvpn3Importer::apply(import, data, secrets, policy));
+
+    // "Ask me every time" means the password from the file is not kept, not
+    // that it is kept and the flags say otherwise.
+    QCOMPARE(data.value(u"password-flags"_s), QString::number(NetworkManager::Setting::NotSaved));
+    QVERIFY(!secrets.contains(u"password"_s));
+}
+
+// -- the real backend importer ------------------------------------------------
+
+void Openvpn3ImportTest::importInlinesEverythingTheProfileReferred()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    const Openvpn3Import import = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s));
+    QVERIFY2(import.isValid(), qPrintable(import.errorMessage()));
+
+    const Openvpn3Profile profile = Openvpn3Profile::fromText(import.profile());
+
+    // Nothing points outside the profile any more.
+    QVERIFY(!import.profile().contains(u"pki/ca.crt"_s));
+    QVERIFY(!import.profile().contains(u"creds.txt"_s));
+    QVERIFY(profile.blockBody(u"ca"_s).contains(u"BEGIN CERTIFICATE"_s));
+    QVERIFY(profile.blockBody(u"cert"_s).contains(u"BEGIN CERTIFICATE"_s));
+    QVERIFY(profile.blockBody(u"key"_s).contains(u"BEGIN PRIVATE KEY"_s));
+    QVERIFY(profile.blockBody(u"tls-auth"_s).contains(u"OpenVPN Static key"_s));
+    // tls-auth's key direction survives as its own directive.
+    QCOMPARE(profile.value(u"key-direction"_s), u"1"_s);
+}
+
+void Openvpn3ImportTest::importLiftsCredentialsOutOfTheProfile()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    const Openvpn3Import import = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s));
+    QVERIFY(import.isValid());
+
+    QCOMPARE(import.username(), u"alice"_s);
+    QCOMPARE(import.password(), u"correct-horse-battery-staple"_s);
+    QVERIFY(import.needsUserPass());
+    QVERIFY(!import.profile().contains(u"correct-horse-battery-staple"_s));
+    QCOMPARE(import.suggestedId(), u"office"_s);
+}
+
+void Openvpn3ImportTest::importOfAMissingFileChangesNothing()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    QTemporaryDir dir;
+    const Openvpn3Import import = Openvpn3Importer::fromFile(dir.filePath(u"nowhere.ovpn"_s));
+
+    QVERIFY(!import.isValid());
+    QVERIFY(!import.errorMessage().isEmpty());
+
+    NMStringMap data{{u"profile"_s, u"b2xk"_s}};
+    NMStringMap secrets;
+    const NMStringMap before = data;
+    QVERIFY(!Openvpn3Importer::apply(import, data, secrets));
+    QCOMPARE(data, before);
+    QVERIFY(secrets.isEmpty());
+}
+
+void Openvpn3ImportTest::importedConnectionUsesTheSecretLayout()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    QString error;
+    NMConnection *connection = Openvpn3Importer::importConnection(dataPath(u"office.ovpn"_s), NetworkManager::Setting::AgentOwned, &error);
+    QVERIFY2(connection, qPrintable(error));
+
+    NMSettingVpn *s_vpn = nm_connection_get_setting_vpn(connection);
+    QVERIFY(s_vpn);
+    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_service_type(s_vpn)), QLatin1String(NM_DBUS_SERVICE_OPENVPN3));
+    QVERIFY(!nm_setting_vpn_get_data_item(s_vpn, "profile"));
+    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_data_item(s_vpn, "profile-storage")), u"secret"_s);
+    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_data_item(s_vpn, "profile-flags")), u"1"_s);
+    QVERIFY(nm_setting_vpn_get_secret(s_vpn, "profile"));
+
+    g_object_unref(connection);
+}
+
+void Openvpn3ImportTest::importedCredentialsFollowTheProfileIntoTheWallet()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    QString error;
+    NMConnection *connection = Openvpn3Importer::importConnection(dataPath(u"office.ovpn"_s), NetworkManager::Setting::AgentOwned, &error);
+    QVERIFY2(connection, qPrintable(error));
+    NMSettingVpn *s_vpn = nm_connection_get_setting_vpn(connection);
+    QVERIFY(s_vpn);
+
+    // The backend leaves a password it read out of the profile system-owned,
+    // because it cannot know what the client wants. Importing into Plasma is
+    // asking for the wallet, and that has to reach the password too: a
+    // connection half in the wallet and half in NetworkManager's own store is
+    // not what the user was offered.
+    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_secret(s_vpn, "password")), u"correct-horse-battery-staple"_s);
+    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_data_item(s_vpn, "password-flags")),
+             QString::number(NetworkManager::Setting::AgentOwned));
+    // The one-time code is still never stored.
+    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_data_item(s_vpn, "challenge-response-flags")),
+             QString::number(NetworkManager::Setting::NotSaved));
+
+    g_object_unref(connection);
+}
+
+void Openvpn3ImportTest::importedCredentialsCanBeAskedForBySystemStorage()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    QString error;
+    NMConnection *connection = Openvpn3Importer::importConnection(dataPath(u"office.ovpn"_s), NetworkManager::Setting::None, &error);
+    QVERIFY2(connection, qPrintable(error));
+    NMSettingVpn *s_vpn = nm_connection_get_setting_vpn(connection);
+
+    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_data_item(s_vpn, "profile-flags")), u"0"_s);
+    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_data_item(s_vpn, "password-flags")), u"0"_s);
+
+    g_object_unref(connection);
+}
+
+// -- normalising a profile that was written here rather than imported ---------
+
+void Openvpn3ImportTest::normalizeEmbedsFilesAndLiftsCredentials()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    // What someone typing into the Profile Source page would produce: a file
+    // reference and a password in the document itself.
+    const QString typed = u"client\nremote a.example.org 1194 udp\nca "_s + dataPath(u"pki/ca.crt"_s)
+        + u"\n<auth-user-pass>\nbob\nhunter2\n</auth-user-pass>\n"_s;
+
+    const Openvpn3Import result = Openvpn3Importer::normalize(typed);
+    QVERIFY2(result.isValid(), qPrintable(result.errorMessage()));
+
+    const Openvpn3Profile profile = Openvpn3Profile::fromText(result.profile());
+    QVERIFY(profile.blockBody(u"ca"_s).contains(u"BEGIN CERTIFICATE"_s));
+    QVERIFY(!result.profile().contains(u"pki/ca.crt"_s));
+    // The credentials belong with the connection now, and only there.
+    QCOMPARE(result.username(), u"bob"_s);
+    QCOMPARE(result.password(), u"hunter2"_s);
+    QVERIFY(!result.profile().contains(u"hunter2"_s));
+    // openvpn3 still has to be told to ask for them.
+    QVERIFY(profile.containsOption(u"auth-user-pass"_s));
+    QVERIFY(result.needsUserPass());
+}
+
+void Openvpn3ImportTest::normalizeLeavesASelfContainedProfileAlone()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    const auto selfContained = u"client\nremote a.example.org 1194 udp\n<ca>\nPEM\n</ca>\nsome-directive 1 2 3\n"_s;
+
+    const Openvpn3Import result = Openvpn3Importer::normalize(selfContained);
+    QVERIFY2(result.isValid(), qPrintable(result.errorMessage()));
+    QCOMPARE(result.profile(), selfContained);
+}
+
+void Openvpn3ImportTest::normalizeRefusesWhatItCannotMakeSelfContained()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    const Openvpn3Import result = Openvpn3Importer::normalize(u"client\nremote a.example.org\nca /nonexistent/nowhere.crt\n"_s);
+
+    QVERIFY(!result.isValid());
+    QVERIFY(!result.errorMessage().isEmpty());
+    QVERIFY(result.profile().isEmpty());
+}
+
+void Openvpn3ImportTest::normalizeLeavesNothingBehindOnDisk()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    const QStringList before = QDir(QDir::tempPath()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
+
+    const Openvpn3Import result = Openvpn3Importer::normalize(u"client\nremote a.example.org\n<auth-user-pass>\nbob\nhunter2\n</auth-user-pass>\n"_s);
+    QVERIFY2(result.isValid(), qPrintable(result.errorMessage()));
+    QCOMPARE(result.password(), u"hunter2"_s);
+
+    // The password went through a file; no file is left holding it.
+    QCOMPARE(QDir(QDir::tempPath()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot), before);
+}
+
+QTEST_MAIN(Openvpn3ImportTest)
+
+#include "openvpn3importtest.moc"
