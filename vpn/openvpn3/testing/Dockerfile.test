@@ -1,0 +1,45 @@
+# plasma-nm test image: the build environment plus the openvpn3 backend's own
+# libnm plugin, so the Plasma importer tests exercise the real importer rather
+# than skipping.  Only the no-GTK plugin and its .name file are needed.
+ARG BASE_IMAGE=plasma-nm-env
+FROM ${BASE_IMAGE}
+
+# Fonts so the rendered screenshots show text rather than tofu.
+RUN pacman -Sy --noconfirm --needed meson python ttf-dejavu noto-fonts && pacman -Scc --noconfirm
+
+# Optional pinned dependency archives (openvpn3 and its gdbuspp, which no
+# official Arch repository carries).  run.sh stages $DEPS_DIR here; when it is
+# empty this step does nothing and the image is built exactly as before.  When
+# it is populated the archives are accepted only if signed by the pinned
+# fingerprint, under LocalFileSigLevel = Required -- never on hash alone.
+ARG DEPS_FINGERPRINT=
+COPY deps /deps
+RUN set -eu; \
+    if ls /deps/*.pkg.tar.zst >/dev/null 2>&1; then \
+        test -n "$DEPS_FINGERPRINT" || { echo 'DEPS_FINGERPRINT is required when /deps has archives' >&2; exit 2; }; \
+        test -f /deps/signing-key.pub || { echo '/deps/signing-key.pub is missing' >&2; exit 2; }; \
+        pacman -Sy --noconfirm --needed gnupg; \
+        pacman-key --init; \
+        gpg --batch --with-colons --import-options show-only --import /deps/signing-key.pub \
+            | awk -F: '$1=="fpr"{print $10}' | grep -qx "$DEPS_FINGERPRINT" \
+            || { echo 'signing key does not match the pinned fingerprint' >&2; exit 2; }; \
+        pacman-key --add /deps/signing-key.pub; \
+        pacman-key --lsign-key "$DEPS_FINGERPRINT"; \
+        for p in /deps/*.pkg.tar.zst; do test -f "$p.sig" || { echo "missing signature for $p" >&2; exit 2; }; done; \
+        sed -i 's/^#\?LocalFileSigLevel.*/LocalFileSigLevel = Required/' /etc/pacman.conf; \
+        grep -q '^LocalFileSigLevel = Required' /etc/pacman.conf; \
+        pacman -U --noconfirm /deps/*.pkg.tar.zst; \
+        pacman -Scc --noconfirm; \
+    fi; \
+    rm -rf /deps
+
+COPY backend-src /backend-src
+RUN meson setup /backend-build /backend-src --prefix=/usr -Dgnome=false -Dgtk3=false \
+    && ninja -C /backend-build install \
+    && rm -rf /backend-build \
+    && test -f /usr/lib/NetworkManager/libnm-vpn-plugin-openvpn3.so \
+    && test -f /usr/lib/NetworkManager/VPN/nm-openvpn3-service.name
+
+# D-Bus EXTERNAL authentication needs an NSS identity for the test process.
+ARG TEST_UID=1000
+RUN getent passwd "$TEST_UID" || useradd --uid "$TEST_UID" --no-create-home openvpn3-test

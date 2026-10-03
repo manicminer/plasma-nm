@@ -1,0 +1,40 @@
+# Build/test environment for the plasma-nm master tree.
+#
+# Stable Arch "core"/"extra" satisfies master's QT_MIN_VERSION (6.11) and
+# KF6_MIN_VERSION (6.30), but not its PROJECT_DEP_VERSION: the top-level
+# CMakeLists.txt does find_package(Plasma 6.7.90) and stable extra ships
+# libplasma 6.7.5, so configuring against core/extra alone fails with
+# "Could not find a configuration file for package Plasma that is compatible
+# with requested version 6.7.90".  [kde-unstable] is enabled for that one
+# reason -- it is where Arch keeps the Plasma 6.8 beta (libplasma 6.7.91).
+# This is upstream master's own dependency floor, not this plugin's: an
+# earlier revision of this file targeted the 6.7.5 release branch, where
+# stable extra was sufficient and no kde-unstable was needed.
+#
+# openconnect and qt6-webengine are Arch's own plasma-nm makedepends and are
+# installed so BUILD_OPENCONNECT builds the normal distro feature set rather
+# than silently falling back to OFF.
+FROM archlinux:latest
+
+# [kde-unstable] is inserted ahead of [core]/[extra] so it takes precedence,
+# and the whole system is upgraded in a single transaction so the mixed
+# package set stays internally consistent.
+RUN printf '[kde-unstable]\nInclude = /etc/pacman.d/mirrorlist\n' > /tmp/kde-unstable.conf \
+    && sed -i '/^\[core\]/e cat /tmp/kde-unstable.conf' /etc/pacman.conf \
+    && rm /tmp/kde-unstable.conf \
+    && pacman -Syu --noconfirm --needed \
+        base-devel cmake ninja git pkgconf \
+        qt6-base qt6-declarative qt6-tools qt6-webengine \
+        extra-cmake-modules \
+        kcoreaddons ki18n kio knotifications kservice solid kwidgetsaddons \
+        kwindowsystem kcmutils kdbusaddons kcolorscheme kcompletion kjobwidgets \
+        kconfig kguiaddons kiconthemes kitemviews knotifyconfig \
+        kdeclarative ksvg \
+        networkmanager-qt modemmanager-qt kirigami kirigami-addons prison \
+        kquickcharts libplasma plasma-workspace \
+        qtkeychain-qt6 qcoro networkmanager openssl openconnect \
+        mobile-broadband-provider-info \
+    && pacman -Scc --noconfirm
+
+ENV QT_QPA_PLATFORM=offscreen
+WORKDIR /src

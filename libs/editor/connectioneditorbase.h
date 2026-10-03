@@ -13,6 +13,7 @@
 #include <QWidget>
 
 #include <NetworkManagerQt/ConnectionSettings>
+#include <NetworkManagerQt/VpnSetting>
 
 class ConnectionWidget;
 class SettingWidget;
@@ -34,6 +35,9 @@ public:
 
     NMVariantMapMap setting() const;
 
+    // Includes logical secrets whose omitted flags default to system ownership.
+    static bool shouldRequestVpnSecrets(const NetworkManager::VpnSetting::Ptr &setting);
+
     // Returns whether the editor is fully initialized (including secrets)
     bool isInitialized() const;
 
@@ -43,6 +47,17 @@ public:
     int wifiTabIndex() const;
 
     void focusWifiSecurityUsername();
+
+    /**
+     * Whether a connection of this kind gets an IPv6 page.
+     *
+     * Most VPNs do not: their service decides the addressing and the page
+     * would offer settings nothing reads. The ones that hand IPv6 over to
+     * NetworkManager do, and both OpenVPN services are among them.
+     *
+     * @param serviceType only means anything for a VPN connection.
+     */
+    static bool hasIpv6Page(NetworkManager::ConnectionSettings::ConnectionType type, const QString &serviceType);
 
 Q_SIGNALS:
     // The default value is supposed to be false, watch this property for validity change after
