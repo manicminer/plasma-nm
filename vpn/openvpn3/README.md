@@ -8,8 +8,21 @@ OpenVPN core features such as PKCS#11. Unsupported directives remain editable
 and preserved; preserving them does not make the backend support them.
 
 General fields, the ordered directives table, and Profile Source share one
-profile document. Unknown directives, duplicate entries, comments, quoting,
-connection blocks and untouched line endings are preserved. File references
+profile document. Unknown directives, duplicate entries, blank lines, quoting,
+connection blocks and untouched line endings are preserved. Comments are not:
+openvpn3 ignores them and the stored profile is not a file anybody opens
+again, so reading a profile drops them rather than fill the table with rows
+nothing can act on, and there is no way to add one. A `#` or `;` is a comment
+when it is unquoted, unescaped and starts a word — what OpenVPN 2 and
+openvpn3 agree on; one inside quotes, escaped or glued to a word is part of a
+value, and the lines of an opaque `<ca>`/`<key>`/unknown `<tag>` payload are
+content and are untouched. Only ASCII whitespace separates a comment from the
+value in front of it — `U+00A0` and the other Unicode separators are literal
+bytes of that value and stay — and a line is never cut into a closing tag it
+was not one, since openvpn3 matches closing tags against the raw line and
+cutting would move a scope boundary. The backend's importer does the same, so
+an imported profile arrives without them and a reimport changes nothing more.
+File references
 and inline credentials entered in the editor go through the real libnm backend
 importer before saving. When returning from a source/table view, successful
 normalization becomes the current document, so later credential edits win and
@@ -146,8 +159,8 @@ explicitly empty secret replies with both locked and already loaded profiles.
 The host secret-request predicate is tested directly; a live NetworkManager
 GetSecrets round trip is not part of these component tests.
 
-Final frontend result: **280 QTest passes, zero failures, zero skips; 8/8
-OpenVPN 3 suites pass**, split 77/25/18/6/23/86/29/16 across
+Final frontend result: **327 QTest passes, zero failures, zero skips; 8/8
+OpenVPN 3 suites pass**, split 118/25/19/6/25/89/29/16 across
 `openvpn3{profile,storage,directives,availability,import,widget,auth,plugin}test`.
 Zero skips is the load-bearing part: every importer assertion is guarded by
 `QSKIP("the openvpn3 backend's libnm plugin is not installed")`, so a run with
@@ -186,7 +199,8 @@ a fresh configuration load; failed or cancelled imports retain useful replies.
 | BUG-9 material | Real file embedding, reject non-UTF-8 binary PEM input, base64 PKCS12. |
 | Auth requests | Missing/locked/corrupt/unsupported profile explanation; explicit hinted retries without profile, message/echo/focus semantics. |
 | Host integration | Actual plugin discovery/loading, both OpenVPN plugins claiming `.ovpn`, no unknown-extension match, IPv6 eligibility and export refusal. KCM chooser wiring is code-reviewed; these component tests do not drive the whole KCM UI. |
-| Directives user flows | Add/edit/remove/move ordered repeated directives, comments and multiline blocks; signal and selection/button behavior. |
+| Directives user flows | Add/edit/remove/move ordered repeated directives and multiline blocks; signal and selection/button behavior. |
+| Comments | Full-line and inline comments dropped on parse, in `<connection>` scopes too; quoted/escaped/word-internal `#` and `;`, escaped whitespace in front of a comment, Unicode whitespace in a value, a backslash-escaped apostrophe inside single quotes (where the two lexers part company over where the quote ends) and opaque payloads kept; a commented closing tag never becomes a scope boundary, with or without a real closer below; dropping is idempotent through a parse, an export/reimport and the editor's own strip followed by the backend's; no comment rows and no Add Comment button; a comment typed into Source or into a `<connection>` body in the table does not survive the save. |
 
 The handoff's existing A–F implementation was retained and regression-tested.
 Every fix above was developed regression-first: the test was written and

@@ -72,6 +72,7 @@ private Q_SLOTS:
 
     void importInlinesEverythingTheProfileReferred();
     void importLiftsCredentialsOutOfTheProfile();
+    void importDropsTheCommentsTheFileHad();
     void importOfAMissingFileChangesNothing();
     void importedConnectionUsesTheSecretLayout();
     void importedCredentialsFollowTheProfileIntoTheWallet();
@@ -80,6 +81,7 @@ private Q_SLOTS:
     void normalizeEmbedsFilesAndLiftsCredentials();
     void normalizeLeavesASelfContainedProfileAlone();
     void normalizeRefusesWhatItCannotMakeSelfContained();
+    void normalizeKeepsWhatTheFrontendsCommentStrippingLeft();
     void normalizeLeavesNothingBehindOnDisk();
 };
 
@@ -258,6 +260,33 @@ void Openvpn3ImportTest::importLiftsCredentialsOutOfTheProfile()
     QCOMPARE(import.suggestedId(), u"office"_s);
 }
 
+void Openvpn3ImportTest::importDropsTheCommentsTheFileHad()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    // office.ovpn is a file as people write them: a banner at the top, a note
+    // on the failover entry.  openvpn3 ignores those, and the stored profile
+    // is not a file anybody opens again, so the backend's normalizer drops
+    // them and the editor has no rows it cannot act on.
+    const Openvpn3Import import = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s));
+    QVERIFY2(import.isValid(), qPrintable(import.errorMessage()));
+
+    const Openvpn3Profile profile = Openvpn3Profile::fromText(import.profile());
+    for (const Openvpn3Entry &entry : profile.entries()) {
+        QVERIFY(entry.isDirective() || entry.isBlock() || entry.kind == Openvpn3Entry::Blank);
+    }
+    QVERIFY(!import.profile().contains(u"Synthetic test profile"_s));
+    QVERIFY(!import.profile().contains(u"failover entry, kept verbatim"_s));
+    // The directives those comments sat among are all still there, in order.
+    QCOMPARE(profile.value(u"dev"_s), u"tun"_s);
+    QVERIFY(profile.blockBody(u"connection"_s).contains(u"remote fallback.example.org 1194 udp"_s));
+    QCOMPARE(profile.arguments(u"some-directive-we-have-never-heard-of"_s), QStringList({u"1"_s, u"2"_s, u"3"_s}));
+    QCOMPARE(profile.arguments(u"verify-x509-name"_s), QStringList({u"C=NO, O=Example Org, CN=vpn.example.org"_s, u"subject"_s}));
+    // Parsing what came back is a fixed point: nothing left to drop.
+    QCOMPARE(Openvpn3Profile::fromText(import.profile()).toText(), import.profile());
+}
+
 void Openvpn3ImportTest::importOfAMissingFileChangesNothing()
 {
     if (!backendAvailable()) {
@@ -388,6 +417,34 @@ void Openvpn3ImportTest::normalizeRefusesWhatItCannotMakeSelfContained()
     QVERIFY(!result.isValid());
     QVERIFY(!result.errorMessage().isEmpty());
     QVERIFY(result.profile().isEmpty());
+}
+
+void Openvpn3ImportTest::normalizeKeepsWhatTheFrontendsCommentStrippingLeft()
+{
+    if (!backendAvailable()) {
+        QSKIP("the openvpn3 backend's libnm plugin is not installed");
+    }
+    // The two comment strippers run one after the other whenever an edited
+    // profile still refers to a file: this class drops the comments as the
+    // document is parsed, and the backend drops them again while it inlines.
+    // What the first pass deliberately kept the second must not take -- the
+    // escaped trailing space is the value, and Unicode whitespace is a
+    // literal byte of it.
+    const QString typed = u"client\nremote a.example.org 1194 udp\nca "_s + dataPath(u"pki/ca.crt"_s)
+        + u"\nsetenv a value\\  # note\nsetenv b value  ; note\n"_s;
+    const QString stripped = Openvpn3Profile::fromText(typed).toText();
+    QVERIFY(stripped.contains(u"setenv a value\\ \n"_s));
+    QVERIFY(stripped.contains(u"setenv b value \n"_s));
+
+    const Openvpn3Import result = Openvpn3Importer::normalize(stripped);
+    QVERIFY2(result.isValid(), qPrintable(result.errorMessage()));
+
+    QVERIFY(result.profile().contains(u"setenv a value\\ \n"_s));
+    QVERIFY(!result.profile().contains(u"setenv a value\\\n"_s));
+    QVERIFY(result.profile().contains(u"setenv b value \n"_s));
+    // And normalizing again is a fixed point, as is parsing what came back.
+    QCOMPARE(Openvpn3Importer::normalize(result.profile()).profile(), result.profile());
+    QCOMPARE(Openvpn3Profile::fromText(result.profile()).toText(), result.profile());
 }
 
 void Openvpn3ImportTest::normalizeLeavesNothingBehindOnDisk()

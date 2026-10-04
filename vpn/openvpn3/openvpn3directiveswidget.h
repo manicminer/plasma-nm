@@ -19,9 +19,14 @@ class QTableWidget;
  * The profile as an ordered, duplicate-preserving table of entries.
  *
  * Everything the named fields on the other page do not know about lives here:
- * unknown directives, repeated ones, comments, and @c <tag> blocks whose body
- * is edited in the box underneath the table. Order is meaningful to OpenVPN,
- * so rows can be moved, and nothing is merged or sorted behind the user.
+ * unknown directives, repeated ones, blank lines, and @c <tag> blocks whose
+ * body is edited in the box underneath the table. Order is meaningful to
+ * OpenVPN, so rows can be moved, and nothing is merged or sorted behind the
+ * user.
+ *
+ * Comments are not among them. Openvpn3Profile drops them when it reads a
+ * profile, so there is nothing to show a row for and no point in a button
+ * that adds one: the next time the connection was loaded it would be gone.
  */
 class Openvpn3DirectivesWidget : public QWidget
 {
