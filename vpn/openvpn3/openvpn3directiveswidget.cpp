@@ -33,8 +33,6 @@ QString kindLabel(const Openvpn3Entry &entry)
         return i18nc("@item an OpenVPN configuration directive", "Directive");
     case Openvpn3Entry::Block:
         return i18nc("@item an inline <tag>…</tag> block in an OpenVPN profile", "Block");
-    case Openvpn3Entry::Comment:
-        return i18nc("@item a comment line in an OpenVPN profile", "Comment");
     case Openvpn3Entry::Blank:
         return i18nc("@item an empty line in an OpenVPN profile", "Blank line");
     }
@@ -85,14 +83,11 @@ Openvpn3DirectivesWidget::Openvpn3DirectivesWidget(QWidget *parent)
     addDirective->setObjectName(QStringLiteral("openvpn3_directives_add"));
     auto addBlock = new QPushButton(i18nc("@action:button", "Add Block"), this);
     addBlock->setObjectName(QStringLiteral("openvpn3_directives_add_block"));
-    auto addComment = new QPushButton(i18nc("@action:button", "Add Comment"), this);
-    addComment->setObjectName(QStringLiteral("openvpn3_directives_add_comment"));
     m_removeButton->setObjectName(QStringLiteral("openvpn3_directives_remove"));
     m_upButton->setObjectName(QStringLiteral("openvpn3_directives_up"));
     m_downButton->setObjectName(QStringLiteral("openvpn3_directives_down"));
     buttons->addWidget(addDirective);
     buttons->addWidget(addBlock);
-    buttons->addWidget(addComment);
     buttons->addStretch();
     buttons->addWidget(m_removeButton);
     buttons->addWidget(m_upButton);
@@ -111,9 +106,6 @@ Openvpn3DirectivesWidget::Openvpn3DirectivesWidget(QWidget *parent)
     });
     connect(addBlock, &QPushButton::clicked, this, [this] {
         addEntry(Openvpn3Profile::block(QStringLiteral("tag"), QString()));
-    });
-    connect(addComment, &QPushButton::clicked, this, [this] {
-        addEntry(Openvpn3Profile::comment(QString()));
     });
     connect(m_removeButton, &QPushButton::clicked, this, &Openvpn3DirectivesWidget::removeSelected);
     connect(m_upButton, &QPushButton::clicked, this, [this] {
@@ -190,15 +182,6 @@ void Openvpn3DirectivesWidget::fillRow(int row, const Openvpn3Entry &entry)
         arguments->setText(i18ncp("@item:intable the contents of an inline block", "%1 line", "%1 lines", entry.body.count(QLatin1Char('\n'))));
         arguments->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         break;
-    case Openvpn3Entry::Comment: {
-        QString text = m_profile.sourceAt(row);
-        while (text.endsWith(QLatin1Char('\n')) || text.endsWith(QLatin1Char('\r'))) {
-            text.chop(1);
-        }
-        arguments->setText(text);
-        arguments->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
-        break;
-    }
     case Openvpn3Entry::Blank:
         arguments->setText(QString());
         arguments->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
@@ -220,8 +203,6 @@ void Openvpn3DirectivesWidget::onCellChanged(int row, int column)
         m_profile.replace(row, entry.isBlock() ? Openvpn3Profile::block(updated.name, entry.body) : Openvpn3Profile::directive(updated.name, entry.arguments));
     } else if (column == ArgumentsColumn && entry.isDirective()) {
         m_profile.setArguments(row, Openvpn3Profile::splitArguments(text));
-    } else if (column == ArgumentsColumn && entry.kind == Openvpn3Entry::Comment) {
-        m_profile.replace(row, Openvpn3Profile::comment(text));
     } else {
         return;
     }

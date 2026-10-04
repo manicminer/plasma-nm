@@ -28,9 +28,29 @@ QStringList linesWithTerminators(const QString &text)
     return lines;
 }
 
+/** The whitespace a directive line is made of words with.
+ *
+ * Only ASCII whitespace separates anything: that is all openvpn3's own lexer
+ * breaks on, and all @c g_ascii_isspace() -- what the backend's ovpn-import.c
+ * uses throughout -- counts. @c QChar::isSpace() also takes the Unicode
+ * separators, @c U+00A0 and friends, which are literal bytes of the value
+ * they sit in; treating one as a separator would delete it from a value or
+ * let a @c # glued behind it pass for the start of a comment. */
+bool isAsciiSpace(QChar c)
+{
+    return c == u' ' || c == u'\t' || c == u'\n' || c == u'\v' || c == u'\f' || c == u'\r';
+}
+
 bool isOpeningTag(const QString &stripped)
 {
     return stripped.size() > 2 && stripped.startsWith(u'<') && stripped.endsWith(u'>') && !stripped.startsWith(QLatin1String("</"));
+}
+
+/** @c {</tag>} on a line of its own, the only thing openvpn3 closes a block
+ * with. */
+bool isClosingTag(const QString &stripped)
+{
+    return stripped.size() > 3 && stripped.startsWith(QLatin1String("</")) && stripped.endsWith(u'>');
 }
 
 /** Blocks that hold options rather than an opaque payload. The backend's
@@ -38,6 +58,123 @@ bool isOpeningTag(const QString &stripped)
 bool isOptionScope(const QString &name)
 {
     return name == QLatin1String("connection");
+}
+
+/**
+ * Where the comment on @p line starts, or -1 if it has none.
+ *
+ * The two OpenVPN lexers do not agree on this, so what counts here is what
+ * both of them read as a comment:
+ *
+ *  - OpenVPN 2 (@c parse_line(), src/openvpn/options_parse.c) only looks for
+ *    a @c # or @c ; at the start of a parameter, and not inside quotes, so
+ *    @c a#b is the literal value a#b.
+ *  - openvpn3 (@c OptionList::LexComment, openvpn/common/options.hpp) looks
+ *    anywhere outside quotes, but a backslash escapes the character: @c a#b
+ *    is the value @c a, and @c \# is a literal @c #.
+ *
+ * Where they disagree -- a character glued to the middle of a word, an
+ * escaped one -- the line is left alone. openvpn3 is what reads the stored
+ * profile and it already ignores whatever it takes for a comment, so keeping
+ * those characters cannot change what an option means, while cutting them
+ * off could. Keep this in step with comment_start() in the backend's
+ * ovpn-import.c.
+ *
+ * "Outside quotes" has to satisfy both of them too, and they do not even
+ * agree on where a quote ends: a backslash inside single quotes is a literal
+ * character for OpenVPN 2 (@c parse_line() skips its escape handling in
+ * @c STATE_READING_SQUOTED_PARM), so the apostrophe after it closes the
+ * quote, while openvpn3 lets it escape that apostrophe and stays inside. Both
+ * quote states are therefore tracked, and a character counts as outside
+ * quotes only when neither lexer has it in one. That is what keeps
+ * @c {setenv a 'x\' # literal'} whole -- the value openvpn3 reads.
+ */
+int commentStart(const QString &line)
+{
+    bool ov2Single = false;
+    bool ov2Double = false;
+    bool ov2Escaped = false;
+    bool ov3Single = false;
+    bool ov3Double = false;
+    bool ov3Escaped = false;
+    bool wordStart = true;
+
+    for (int i = 0; i < line.size(); ++i) {
+        const QChar c = line.at(i);
+        const bool quoted = ov2Single || ov2Double || ov3Single || ov3Double;
+        const bool escaped = ov2Escaped || ov3Escaped;
+
+        if (wordStart && !quoted && !escaped && (c == u'#' || c == u';')) {
+            return i;
+        }
+
+        // OpenVPN 2: a backslash is not an escape inside single quotes.
+        if (ov2Escaped) {
+            ov2Escaped = false;
+        } else if (c == u'\\' && !ov2Single) {
+            ov2Escaped = true;
+        } else if (c == u'"' && !ov2Single) {
+            ov2Double = !ov2Double;
+        } else if (c == u'\'' && !ov2Double) {
+            ov2Single = !ov2Single;
+        }
+
+        // openvpn3: a backslash escapes everywhere, quotes included.
+        if (ov3Escaped) {
+            ov3Escaped = false;
+        } else if (c == u'\\') {
+            ov3Escaped = true;
+        } else if (c == u'"' && !ov3Single) {
+            ov3Double = !ov3Double;
+        } else if (c == u'\'' && !ov3Double) {
+            ov3Single = !ov3Single;
+        }
+
+        // Only unquoted, unescaped whitespace starts the next word.
+        wordStart = !quoted && !escaped && isAsciiSpace(c);
+    }
+    return -1;
+}
+
+/** @p line without the comment starting at @p cut, its terminator kept. An
+ * empty string when nothing but whitespace came before the comment, which is
+ * how a line that is only a comment is recognised.
+ *
+ * What goes with the comment is the unescaped whitespace that separated it,
+ * and no more: backslash-escaped whitespace is part of the value in front of
+ * it for both lexers, so @c {setenv a value\  # c} keeps the value
+ * @c {value\ }. An even number of backslashes before the whitespace are
+ * escaped backslashes and leave it a separator again. Unicode whitespace is
+ * not a separator at all and stays where it is. */
+QString withoutComment(const QString &line, int cut)
+{
+    QString terminator;
+    if (line.endsWith(QLatin1String("\r\n"))) {
+        terminator = QStringLiteral("\r\n");
+    } else if (line.endsWith(u'\n')) {
+        terminator = QStringLiteral("\n");
+    }
+
+    QString kept = line.left(cut);
+    while (!kept.isEmpty() && isAsciiSpace(kept.back())) {
+        int backslashes = 0;
+        while (backslashes < kept.size() - 1 && kept.at(kept.size() - 2 - backslashes) == u'\\') {
+            ++backslashes;
+        }
+        if (backslashes % 2 != 0) {
+            break; // escaped: part of the value, not a separator
+        }
+        kept.chop(1);
+    }
+    return kept.isEmpty() ? QString() : kept + terminator;
+}
+
+/** A @c <connection> body with the comments among its directives dropped.
+ * Any other block's body is opaque payload -- a certificate, a key, a
+ * credential -- and comes back exactly as it was given. */
+QString bodyWithoutComments(const QString &name, const QString &body)
+{
+    return isOptionScope(name) ? Openvpn3Profile::fromText(body).toText() : body;
 }
 
 /** Directives naming a file the backend inlines when it normalises. Its
@@ -73,14 +210,14 @@ QStringList Openvpn3Profile::splitArguments(const QString &line)
     int i = 0;
 
     while (i < length) {
-        while (i < length && line.at(i).isSpace()) {
+        while (i < length && isAsciiSpace(line.at(i))) {
             ++i;
         }
         if (i >= length || line.at(i) == u'#' || line.at(i) == u';') {
             break;
         }
         QString word;
-        while (i < length && !line.at(i).isSpace()) {
+        while (i < length && !isAsciiSpace(line.at(i))) {
             const QChar c = line.at(i);
             if (c == u'"' || c == u'\'') {
                 const QChar quote = c;
@@ -110,6 +247,11 @@ QString Openvpn3Profile::quoteArgument(const QString &argument)
 {
     bool needsQuotes = argument.isEmpty();
     for (const QChar c : argument) {
+        // Quoting asks what could be lost, not what separates: Unicode
+        // whitespace separates nothing, but a value that ends in it comes
+        // back short of it, because reading a line strips it off along with
+        // the terminator. So @c QChar::isSpace() here, where @c isAsciiSpace()
+        // reads the line.
         if (c.isSpace() || c == u'"' || c == u'\'' || c == u'\\' || c == u'#' || c == u';') {
             needsQuotes = true;
             break;
@@ -138,7 +280,31 @@ Openvpn3Profile Openvpn3Profile::fromText(const QString &text)
     const QStringList lines = linesWithTerminators(text);
 
     for (int i = 0; i < lines.size(); ++i) {
-        const QString &line = lines.at(i);
+        const QString &raw = lines.at(i);
+        // A comment is not an entry and never reaches one: a line that is
+        // only a comment is skipped, and one on a directive is cut off the
+        // source the entry keeps.  The lines of an opaque <tag> payload are
+        // content rather than directives and are not read as lines at all --
+        // the block below swallows them whole.
+        const int comment = commentStart(raw);
+        QString line = raw;
+        if (comment >= 0) {
+            const QString cut = withoutComment(raw, comment);
+            // Cutting a comment must not turn a line into a closing tag the
+            // raw line was not one: openvpn3 matches every closing tag
+            // against the raw line, so {</connection> # x} is no boundary for
+            // it even when a real closer follows below. Cutting here would
+            // invent one there and move every directive up to the real closer
+            // out of the scope. Such a line is kept exactly as it stands
+            // instead -- the comment stays, and openvpn3 ignores it where it
+            // is. Keep this in step with the backend's ovpn-import.c.
+            if (!isClosingTag(cut.trimmed())) {
+                line = cut;
+            }
+        }
+        if (line.isEmpty()) {
+            continue;
+        }
         const QString stripped = line.trimmed();
         Openvpn3Entry entry;
         entry.m_verbatim = true;
@@ -146,8 +312,6 @@ Openvpn3Profile Openvpn3Profile::fromText(const QString &text)
 
         if (stripped.isEmpty()) {
             entry.kind = Openvpn3Entry::Blank;
-        } else if (stripped.startsWith(u'#') || stripped.startsWith(u';')) {
-            entry.kind = Openvpn3Entry::Comment;
         } else if (isOpeningTag(stripped)) {
             entry.kind = Openvpn3Entry::Block;
             entry.name = stripped.mid(1, stripped.size() - 2);
@@ -155,18 +319,27 @@ Openvpn3Profile Openvpn3Profile::fromText(const QString &text)
             QString body;
             int end = i + 1;
             for (; end < lines.size(); ++end) {
+                // openvpn3 matches a closing tag against the raw line, so a
+                // comment after one does not close the block for it either.
                 if (lines.at(end).trimmed() == closing) {
                     break;
                 }
                 body += lines.at(end);
             }
-            entry.body = body;
             if (end < lines.size()) {
+                // A scope's lines are directives, so the comments among them
+                // are comments. Parsing the body is how they go, and it
+                // leaves a block nested in here opaque, payload and all.
+                body = bodyWithoutComments(entry.name, body);
+                entry.body = body;
                 entry.m_source = line + body + lines.at(end);
                 i = end;
             } else {
                 // Unterminated: everything that is left belongs to this block
-                // and is kept exactly as it is rather than repaired.
+                // and is kept exactly as it is rather than repaired -- a scope
+                // whose closing tag carries a comment is not closed for
+                // openvpn3 either, and repairing it here would invent one.
+                entry.body = body;
                 entry.m_source = line + body;
                 i = lines.size() - 1;
             }
@@ -185,13 +358,6 @@ QString Openvpn3Profile::render(const Openvpn3Entry &entry)
     switch (entry.kind) {
     case Openvpn3Entry::Blank:
         return QStringLiteral("\n");
-    case Openvpn3Entry::Comment: {
-        QString text = entry.m_source;
-        if (!text.endsWith(u'\n')) {
-            text += u'\n';
-        }
-        return text;
-    }
     case Openvpn3Entry::Block: {
         QString text = u'<' + entry.name + QLatin1String(">\n");
         text += entry.body;
@@ -241,7 +407,7 @@ QList<int> Openvpn3Profile::indexesOf(const QString &name) const
 {
     QList<int> indexes;
     for (int i = 0; i < m_entries.size(); ++i) {
-        if (m_entries.at(i).name == name && m_entries.at(i).kind != Openvpn3Entry::Comment) {
+        if (m_entries.at(i).name == name) {
             indexes.append(i);
         }
     }
@@ -285,7 +451,7 @@ QList<Openvpn3Entry> Openvpn3Profile::optionsNamed(const QString &name) const
     QList<Openvpn3Entry> found;
     const QList<Openvpn3Entry> options = optionEntries();
     for (const Openvpn3Entry &entry : options) {
-        if (entry.name == name && entry.kind != Openvpn3Entry::Comment) {
+        if (entry.name == name) {
             found.append(entry);
         }
     }
@@ -407,10 +573,14 @@ void Openvpn3Profile::setArguments(int index, const QStringList &arguments)
 void Openvpn3Profile::setBody(int index, const QString &body)
 {
     Openvpn3Entry &entry = m_entries[index];
-    if (entry.body == body) {
+    // A <connection> body is the scope's directives however it arrives, so a
+    // comment put in by hand goes the same way one read from a file does.
+    // Keeping it would save an edit that vanishes on the next load.
+    const QString kept = bodyWithoutComments(entry.name, body);
+    if (entry.body == kept) {
         return;
     }
-    entry.body = body;
+    entry.body = kept;
     entry.m_verbatim = false;
 }
 
@@ -493,19 +663,7 @@ Openvpn3Entry Openvpn3Profile::block(const QString &name, const QString &body)
     Openvpn3Entry entry;
     entry.kind = Openvpn3Entry::Block;
     entry.name = name;
-    entry.body = body;
-    return entry;
-}
-
-Openvpn3Entry Openvpn3Profile::comment(const QString &text)
-{
-    Openvpn3Entry entry;
-    entry.kind = Openvpn3Entry::Comment;
-    entry.m_source = text.startsWith(u'#') || text.startsWith(u';') ? text : QLatin1String("# ") + text;
-    if (!entry.m_source.endsWith(u'\n')) {
-        entry.m_source += u'\n';
-    }
-    entry.m_verbatim = true;
+    entry.body = bodyWithoutComments(name, body);
     return entry;
 }
 

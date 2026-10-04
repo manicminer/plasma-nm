@@ -36,9 +36,6 @@ using namespace Qt::Literals::StringLiterals;
 namespace
 {
 const auto kProfile = QStringLiteral(
-    "##\n"
-    "# Synthetic test profile\n"
-    "##\n"
     "client\n"
     "dev tun\n"
     "proto udp\n"
@@ -55,6 +52,33 @@ const auto kProfile = QStringLiteral(
     "<ca>\n"
     "-----BEGIN CERTIFICATE-----\n"
     "SYNTHETIC\n"
+    "-----END CERTIFICATE-----\n"
+    "</ca>\n");
+
+/** A connection written before comments were dropped, or a file that still
+ * has them: what the editor has to cope with without showing them. */
+const auto kCommented = QStringLiteral(
+    "##\n"
+    "# Synthetic test profile\n"
+    "##\n"
+    "client\n"
+    "remote vpn1.example.org 1194 udp # the main one\n"
+    "; and a semicolon comment\n"
+    "setenv hash \"a # inside quotes\"\n"
+    "<ca>\n"
+    "-----BEGIN CERTIFICATE-----\n"
+    "SYNTHETIC # payload, not a comment\n"
+    "-----END CERTIFICATE-----\n"
+    "</ca>\n");
+
+/** kCommented once it has been through the editor. */
+const auto kCommentedKept = QStringLiteral(
+    "client\n"
+    "remote vpn1.example.org 1194 udp\n"
+    "setenv hash \"a # inside quotes\"\n"
+    "<ca>\n"
+    "-----BEGIN CERTIFICATE-----\n"
+    "SYNTHETIC # payload, not a comment\n"
     "-----END CERTIFICATE-----\n"
     "</ca>\n");
 
@@ -462,6 +486,7 @@ private Q_SLOTS:
     void addingARemoteAppendsIt();
     void removingARemoteLeavesConnectionBlocksAlone();
     void sourceEditsAreTakenVerbatim();
+    void aCommentTypedIntoTheSourceIsDropped();
     void sourceEditsReachTheNamedFields();
     void aLockedProfileIsNeverOverwritten();
     void anUnknownStorageLayoutBlocksSaving();
@@ -482,6 +507,8 @@ private Q_SLOTS:
 
     void directiveTableEditsReachTheStoredProfile();
     void directiveTableKeepsEntriesTheEditorDoesNotUnderstand();
+    void commentsInAStoredProfileAreNeitherShownNorSavedBack();
+    void aCommentTypedIntoAScopeBodyIsNotSaved();
     void aBlockBodyCanBeEditedInTheTable();
 
     void removingARemoteDoesNotMoveAnothersExtraArguments();
@@ -671,11 +698,25 @@ void Openvpn3WidgetTest::sourceEditsAreTakenVerbatim()
     QPlainTextEdit *source = sourceEdit(&widget);
     QVERIFY(source);
 
-    const auto replacement = QStringLiteral("client\nremote typed.example.org 1234 tcp\n# a comment of mine\n");
+    const auto replacement = QStringLiteral("client\nremote typed.example.org 1234 tcp\nsome-directive-of-mine 'odd  quoting'\n");
     tabs(&widget)->setCurrentIndex(2);
     source->setPlainText(replacement);
 
     QCOMPARE(storedProfileOf(widget.setting()), replacement);
+}
+
+void Openvpn3WidgetTest::aCommentTypedIntoTheSourceIsDropped()
+{
+    OpenVpn3SettingWidget widget(legacySetting());
+    QPlainTextEdit *source = sourceEdit(&widget);
+    QVERIFY(source);
+
+    tabs(&widget)->setCurrentIndex(2);
+    source->setPlainText(u"# a comment of mine\nclient\nremote typed.example.org 1234 tcp # here\n"_s);
+
+    // The profile is not a file anybody will open again, so a comment typed
+    // into it has nowhere to live; the rest of the text is taken as typed.
+    QCOMPARE(storedProfileOf(widget.setting()), u"client\nremote typed.example.org 1234 tcp\n"_s);
 }
 
 void Openvpn3WidgetTest::sourceEditsReachTheNamedFields()
@@ -929,19 +970,69 @@ void Openvpn3WidgetTest::directiveTableKeepsEntriesTheEditorDoesNotUnderstand()
     tabs(&widget)->setCurrentIndex(1);
     QTableWidget *table = directivesTable(&widget);
 
-    // Every line of the profile is a row, comments and blank lines included.
+    // Every line of the profile is a row, blank lines included.
     QStringList kinds;
     for (int row = 0; row < table->rowCount(); ++row) {
         kinds.append(table->item(row, 0)->text());
     }
-    QVERIFY(kinds.contains(u"Comment"_s));
+    QVERIFY(!kinds.contains(u"Comment"_s));
     QVERIFY(kinds.contains(u"Blank line"_s));
     QVERIFY(kinds.contains(u"Block"_s));
+    QVERIFY(kinds.contains(u"Directive"_s));
 
     // Switching away and back changes nothing.
     tabs(&widget)->setCurrentIndex(0);
     tabs(&widget)->setCurrentIndex(1);
     QCOMPARE(storedProfileOf(widget.setting()), kProfile);
+}
+
+void Openvpn3WidgetTest::commentsInAStoredProfileAreNeitherShownNorSavedBack()
+{
+    // A connection imported by an older build still carries its comments.
+    // Opening it is not supposed to show rows for them, and saving it is not
+    // supposed to write them back.
+    OpenVpn3SettingWidget widget(legacySetting(kCommented));
+    tabs(&widget)->setCurrentIndex(1);
+    QTableWidget *table = directivesTable(&widget);
+
+    QCOMPARE(table->rowCount(), 4); // client, remote, setenv, <ca>
+    for (int row = 0; row < table->rowCount(); ++row) {
+        QVERIFY(table->item(row, 0)->text() != u"Comment"_s);
+    }
+    QVERIFY(rowOfDirective(table, u"client"_s) >= 0);
+    QVERIFY(rowOfDirective(table, u"ca"_s) >= 0);
+
+    // The quoted hash is a value and the one in the certificate is payload;
+    // only the comments went.
+    QCOMPARE(widget.profileText(), kCommentedKept);
+    QCOMPARE(storedProfileOf(widget.setting()), kCommentedKept);
+
+    // And the editor still reads the profile the same way afterwards.
+    QTableWidget *remotes = remotesTable(&widget);
+    QCOMPARE(remotes->rowCount(), 1);
+    QCOMPARE(remotes->item(0, 0)->text(), u"vpn1.example.org"_s);
+}
+
+void Openvpn3WidgetTest::aCommentTypedIntoAScopeBodyIsNotSaved()
+{
+    // The source page drops a comment typed into it; the directive table has
+    // to drop one typed into a <connection> body too, or the same comment
+    // would be saved on one page and refused on the other.
+    OpenVpn3SettingWidget widget(legacySetting(u"client\n<connection>\nremote a.example.org 1194 udp\n</connection>\n"_s));
+    tabs(&widget)->setCurrentIndex(1);
+    QTableWidget *table = directivesTable(&widget);
+
+    const int row = rowOfDirective(table, u"connection"_s);
+    QVERIFY(row >= 0);
+    table->selectRow(row);
+
+    auto *body = widget.findChild<QPlainTextEdit *>(u"openvpn3_directives_body"_s);
+    QVERIFY(body);
+    body->setPlainText(u"# mine\nremote b.example.org 443 tcp # here\n"_s);
+
+    const auto expected = u"client\n<connection>\nremote b.example.org 443 tcp\n</connection>\n"_s;
+    QCOMPARE(widget.profileText(), expected);
+    QCOMPARE(storedProfileOf(widget.setting()), expected);
 }
 
 void Openvpn3WidgetTest::aBlockBodyCanBeEditedInTheTable()
@@ -1453,8 +1544,8 @@ void Openvpn3WidgetTest::anUntouchedProfileIsNeverRewritten()
         QSKIP("the openvpn3 backend's libnm plugin is not installed");
     }
     // Normalising is for profiles that need it. One that is already
-    // self-contained comes out byte for byte as it went in, comments,
-    // duplicate directives, odd quoting and all.
+    // self-contained comes out byte for byte as it went in, duplicate
+    // directives, odd quoting and all.
     OpenVpn3SettingWidget widget(legacySetting());
 
     QCOMPARE(storedProfileOf(widget.setting()), kProfile);
