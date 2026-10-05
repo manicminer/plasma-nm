@@ -8,23 +8,29 @@ OpenVPN core features such as PKCS#11. Unsupported directives remain editable
 and preserved; preserving them does not make the backend support them.
 
 General fields, the ordered directives table, and Profile Source share one
-profile document. Unknown directives, duplicate entries, blank lines, quoting,
-connection blocks and untouched line endings are preserved. Comments are not:
-openvpn3 ignores them and the stored profile is not a file anybody opens
-again, so reading a profile drops them rather than fill the table with rows
-nothing can act on, and there is no way to add one. A `#` or `;` is a comment
-when it is unquoted, unescaped and starts a word — what OpenVPN 2 and
-openvpn3 agree on; one inside quotes, escaped or glued to a word is part of a
-value, and the lines of an opaque `<ca>`/`<key>`/unknown `<tag>` payload are
-content and are untouched. Only ASCII whitespace separates a comment from the
-value in front of it — `U+00A0` and the other Unicode separators are literal
-bytes of that value and stay — and a line is never cut into a closing tag it
-was not one, since openvpn3 matches closing tags against the raw line and
-cutting would move a scope boundary. The backend's importer does the same, so
-an imported profile arrives without them and a reimport changes nothing more.
-File references
-and inline credentials entered in the editor go through the real libnm backend
-importer before saving. When returning from a source/table view, successful
+profile document. Unknown directives, duplicate entries, quoting, connection
+blocks and untouched line endings are preserved. Formatting — comments and
+blank lines — is not: openvpn3 reads nothing from it and the stored profile is
+not a file anybody opens again, so reading a profile drops it rather than fill
+the table with rows nothing can act on, and there is no way to add one. A `#`
+or `;` is a comment when it is unquoted, unescaped and starts a word — what
+OpenVPN 2 and openvpn3 agree on; one inside quotes, escaped or glued to a word
+is part of a value. A line is blank when it holds nothing but the whitespace
+the backend's importer strips a line with, so a line of `U+00A0` is a value and
+so is one of `\v`, which `g_ascii_isspace()` does not count; the whitespace a
+directive line is padded with is part of that line and stays. The lines of an
+opaque `<ca>`/`<key>`/`<auth-user-pass>`/unknown `<tag>` payload are content
+and are untouched, blank lines and empty credentials included. Only ASCII
+whitespace separates a comment from the value in front of it — `U+00A0` and the
+other Unicode separators are literal bytes of that value and stay — and a line
+is never cut into a closing tag it was not one, since openvpn3 matches closing
+tags against the raw line and cutting would move a scope boundary. Every row of
+the table therefore has a name, and clearing one is refused rather than saved as
+a line the next load would drop. The backend's importer does the same, so an
+imported profile arrives without formatting and a reimport changes nothing more.
+
+File references and inline credentials entered in the editor go through the real
+libnm backend importer before saving. When returning from a source/table view, successful
 normalization becomes the current document, so later credential edits win and
 embedded files no longer depend on the originals. Relative references typed
 in Source have no original file directory; use absolute paths or **Embed File**.
@@ -201,6 +207,7 @@ a fresh configuration load; failed or cancelled imports retain useful replies.
 | Host integration | Actual plugin discovery/loading, both OpenVPN plugins claiming `.ovpn`, no unknown-extension match, IPv6 eligibility and export refusal. KCM chooser wiring is code-reviewed; these component tests do not drive the whole KCM UI. |
 | Directives user flows | Add/edit/remove/move ordered repeated directives and multiline blocks; signal and selection/button behavior. |
 | Comments | Full-line and inline comments dropped on parse, in `<connection>` scopes too; quoted/escaped/word-internal `#` and `;`, escaped whitespace in front of a comment, Unicode whitespace in a value, a backslash-escaped apostrophe inside single quotes (where the two lexers part company over where the quote ends) and opaque payloads kept; a commented closing tag never becomes a scope boundary, with or without a real closer below; dropping is idempotent through a parse, an export/reimport and the editor's own strip followed by the backend's; no comment rows and no Add Comment button; a comment typed into Source or into a `<connection>` body in the table does not survive the save. |
+| Blank lines | Empty, space, tab, form-feed and CRLF-only lines dropped on parse, leading, trailing, in runs, next to a comment and inside `<connection>` scopes; blank lines inside an opaque `<ca>`/`<key>`/`<auth-user-pass>`/unknown payload kept byte for byte, leading and trailing ones and an empty password included; a line of `U+00A0` or of `\v` kept as the value it is, and directive indentation kept; no blank rows, no Add Blank button, and clearing an entry's name refused; dropping is idempotent through repeated parses, through every mutator the editor has, and through an export/reimport; a blank line typed into Source or into a `<connection>` body does not survive the save and the Source page is redrawn without it. |
 
 The handoff's existing A–F implementation was retained and regression-tested.
 Every fix above was developed regression-first: the test was written and

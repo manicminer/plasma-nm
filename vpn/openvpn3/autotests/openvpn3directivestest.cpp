@@ -23,9 +23,9 @@ enum Column {
     ArgumentsColumn,
 };
 
-/** A profile with everything the table has to carry: blank lines, repeated
- * directives, a block, a directive nobody has heard of -- and the comments
- * that are not the table's to carry. */
+/** A profile with everything the table has to carry: repeated directives, a
+ * block, a directive nobody has heard of -- and the formatting, the comments
+ * and the blank lines, that are not the table's to carry. */
 const auto kProfile = QStringLiteral(
     "# a comment\n"
     "client\n"
@@ -34,6 +34,7 @@ const auto kProfile = QStringLiteral(
     "remote b.example.org 443 tcp # the fallback\n"
     "push-peer-info\n"
     "setenv opt 'single quoted value'\n"
+    "\n"
     "<ca>\n"
     "-----BEGIN CERTIFICATE-----\n"
     "SYNTHETIC # payload, not a comment\n"
@@ -41,11 +42,10 @@ const auto kProfile = QStringLiteral(
     "</ca>\n"
     "some-directive-we-have-never-heard-of 1 2 3\n");
 
-/** kProfile as the table holds it: without the comments, with everything
+/** kProfile as the table holds it: without the formatting, with everything
  * else exactly where it was. */
 const auto kProfileKept = QStringLiteral(
     "client\n"
-    "\n"
     "remote a.example.org 1194 udp\n"
     "remote b.example.org 443 tcp\n"
     "push-peer-info\n"
@@ -112,12 +112,16 @@ private Q_SLOTS:
     void editingADirectivesArgumentsRespectsQuoting();
     void renamingADirectiveKeepsItsArguments();
     void commentsAreNotRowsAtAll();
+    void blankLinesAreNotRowsAtAll();
     void aCommentTypedIntoAScopeBodyIsDropped();
+    void aBlankLineTypedIntoAScopeBodyIsDropped();
     void aBlockBodyIsEditedUnderTheTable();
     void theBodyBoxIsOnlyForBlocks();
     void addingADirectivePutsItAfterTheSelectedRow();
     void addingABlockGivesItAnEditableBody();
     void thereIsNoWayToAddAComment();
+    void thereIsNoWayToAddABlankLine();
+    void anEntryCannotBeLeftWithoutAName();
     void removingARowRemovesOnlyThatEntry();
     void movingARowMovesOnlyThatEntry();
     void everyEditIsReported();
@@ -129,11 +133,12 @@ void Openvpn3DirectivesTest::everyLineOfTheProfileIsARow()
     Openvpn3DirectivesWidget widget;
     widget.setProfile(Openvpn3Profile::fromText(kProfile));
 
-    // Thirteen lines of text, eight of which are entries: the certificate is
-    // one block rather than five rows, and the comment is no row at all.
-    QCOMPARE(table(&widget)->rowCount(), 8);
+    // Fourteen lines of text, seven of which are entries: the certificate is
+    // one block rather than five rows, and the comment and the blank lines are
+    // no rows at all.
+    QCOMPARE(table(&widget)->rowCount(), 7);
     QCOMPARE(namesIn(table(&widget)),
-             QStringList({u"client"_s, QString(), u"remote"_s, u"remote"_s, u"push-peer-info"_s, u"setenv"_s, u"ca"_s,
+             QStringList({u"client"_s, u"remote"_s, u"remote"_s, u"push-peer-info"_s, u"setenv"_s, u"ca"_s,
                           u"some-directive-we-have-never-heard-of"_s}));
 }
 
@@ -142,9 +147,9 @@ void Openvpn3DirectivesTest::anUntouchedProfileComesBackUnchanged()
     Openvpn3DirectivesWidget widget;
     widget.setProfile(Openvpn3Profile::fromText(kProfile));
 
-    // Looking at it is not editing it: the odd quoting, the blank line and
-    // the block all come back byte for byte.  The comments do not come back
-    // at all, and that is the one thing loading a profile changes.
+    // Looking at it is not editing it: the odd quoting and the block come back
+    // byte for byte.  The formatting does not come back at all, and that is
+    // the one thing loading a profile changes.
     QCOMPARE(widget.profile().toText(), kProfileKept);
 }
 
@@ -153,13 +158,13 @@ void Openvpn3DirectivesTest::repeatedDirectivesAreNeitherMergedNorReordered()
     Openvpn3DirectivesWidget widget;
     widget.setProfile(Openvpn3Profile::fromText(kProfile));
 
-    QCOMPARE(rowOf(table(&widget), u"remote"_s, 0), 2);
-    QCOMPARE(rowOf(table(&widget), u"remote"_s, 1), 3);
-    QCOMPARE(table(&widget)->item(2, ArgumentsColumn)->text(), u"a.example.org 1194 udp"_s);
-    QCOMPARE(table(&widget)->item(3, ArgumentsColumn)->text(), u"b.example.org 443 tcp"_s);
+    QCOMPARE(rowOf(table(&widget), u"remote"_s, 0), 1);
+    QCOMPARE(rowOf(table(&widget), u"remote"_s, 1), 2);
+    QCOMPARE(table(&widget)->item(1, ArgumentsColumn)->text(), u"a.example.org 1194 udp"_s);
+    QCOMPARE(table(&widget)->item(2, ArgumentsColumn)->text(), u"b.example.org 443 tcp"_s);
 
     // Editing the second one is editing the second one.
-    table(&widget)->item(3, ArgumentsColumn)->setText(u"c.example.org 443 tcp"_s);
+    table(&widget)->item(2, ArgumentsColumn)->setText(u"c.example.org 443 tcp"_s);
 
     const QString text = widget.profile().toText();
     QVERIFY(text.contains(u"remote a.example.org 1194 udp\nremote c.example.org 443 tcp\n"_s));
@@ -218,6 +223,24 @@ void Openvpn3DirectivesTest::commentsAreNotRowsAtAll()
     QVERIFY(!widget.profile().toText().contains(u"# the fallback"_s));
 }
 
+void Openvpn3DirectivesTest::blankLinesAreNotRowsAtAll()
+{
+    Openvpn3DirectivesWidget widget;
+    widget.setProfile(Openvpn3Profile::fromText(kProfile));
+
+    // The two blank lines the profile was loaded with are not rows, and no row
+    // is of a kind the table used to call "Blank line": every row has a name
+    // and a kind that can be acted on.
+    for (int row = 0; row < table(&widget)->rowCount(); ++row) {
+        QVERIFY(table(&widget)->item(row, KindColumn)->text() != u"Blank line"_s);
+        QVERIFY(!table(&widget)->item(row, NameColumn)->text().isEmpty());
+        QVERIFY(table(&widget)->item(row, KindColumn)->text() == u"Directive"_s || table(&widget)->item(row, KindColumn)->text() == u"Block"_s);
+    }
+    // And they are not waiting in the profile to be written back out either.
+    QVERIFY(!widget.profile().toText().contains(u"\n\n"_s));
+    QCOMPARE(widget.profile().toText(), kProfileKept);
+}
+
 void Openvpn3DirectivesTest::aCommentTypedIntoAScopeBodyIsDropped()
 {
     Openvpn3DirectivesWidget widget;
@@ -240,6 +263,31 @@ void Openvpn3DirectivesTest::aCommentTypedIntoAScopeBodyIsDropped()
     table(&widget)->selectRow(caRow);
     body(&widget)->setPlainText(u"# payload\nA;B#C\n"_s);
     QCOMPARE(widget.profile().toText(), u"client\n<ca>\n# payload\nA;B#C\n</ca>\n"_s);
+}
+
+void Openvpn3DirectivesTest::aBlankLineTypedIntoAScopeBodyIsDropped()
+{
+    Openvpn3DirectivesWidget widget;
+    widget.setProfile(Openvpn3Profile::fromText(u"client\n<connection>\nremote a.example.org\n</connection>\n"_s));
+
+    const int row = rowOf(table(&widget), u"connection"_s);
+    table(&widget)->selectRow(row);
+    body(&widget)->setPlainText(u"\nremote b.example.org 443 tcp\n   \n"_s);
+
+    // A <connection> body is the scope's directives, so a blank line typed
+    // into it has nowhere to live either, and the line count the table shows
+    // is the number of entries the scope ended up with.
+    QCOMPARE(widget.profile().toText(), u"client\n<connection>\nremote b.example.org 443 tcp\n</connection>\n"_s);
+    QCOMPARE(table(&widget)->item(row, ArgumentsColumn)->text(), u"1 line"_s);
+
+    // An opaque payload is content rather than directives and keeps every
+    // blank line typed into it, at either end included.
+    widget.setProfile(Openvpn3Profile::fromText(u"client\n<ca>\nPEM\n</ca>\n"_s));
+    const int caRow = rowOf(table(&widget), u"ca"_s);
+    table(&widget)->selectRow(caRow);
+    body(&widget)->setPlainText(u"\nPEM\n\n"_s);
+    QCOMPARE(widget.profile().toText(), u"client\n<ca>\n\nPEM\n\n</ca>\n"_s);
+    QCOMPARE(table(&widget)->item(caRow, ArgumentsColumn)->text(), u"3 lines"_s);
 }
 
 void Openvpn3DirectivesTest::aBlockBodyIsEditedUnderTheTable()
@@ -324,6 +372,39 @@ void Openvpn3DirectivesTest::thereIsNoWayToAddAComment()
     QVERIFY(button(&widget, u"openvpn3_directives_add_block"_s));
 }
 
+void Openvpn3DirectivesTest::thereIsNoWayToAddABlankLine()
+{
+    Openvpn3DirectivesWidget widget;
+    widget.setProfile(Openvpn3Profile::fromText(u"client\n"_s));
+
+    // Same reason: a blank line is not an entry the profile keeps, so a button
+    // for one would only promise an edit that vanishes on the next load.
+    QVERIFY(!button(&widget, u"openvpn3_directives_add_blank"_s));
+    QCOMPARE(widget.findChildren<QPushButton *>().size(), 5); // add, add block, remove, up, down
+}
+
+void Openvpn3DirectivesTest::anEntryCannotBeLeftWithoutAName()
+{
+    Openvpn3DirectivesWidget widget;
+    widget.setProfile(Openvpn3Profile::fromText(u"client\nremote a.example.org 1194 udp\n"_s));
+    QSignalSpy changed(&widget, &Openvpn3DirectivesWidget::changed);
+
+    // A directive with no name renders as a blank line, which the next load
+    // would drop -- the row would be gone and its arguments with it. Clearing
+    // the name is therefore no edit at all: the cell goes back to what it was.
+    table(&widget)->item(1, NameColumn)->setText(QString());
+
+    QCOMPARE(table(&widget)->item(1, NameColumn)->text(), u"remote"_s);
+    QCOMPARE(table(&widget)->rowCount(), 2);
+    QCOMPARE(widget.profile().toText(), u"client\nremote a.example.org 1194 udp\n"_s);
+    QVERIFY(changed.isEmpty());
+
+    // Whitespace is not a name either.
+    table(&widget)->item(1, NameColumn)->setText(u"   "_s);
+    QCOMPARE(widget.profile().toText(), u"client\nremote a.example.org 1194 udp\n"_s);
+    QVERIFY(changed.isEmpty());
+}
+
 void Openvpn3DirectivesTest::removingARowRemovesOnlyThatEntry()
 {
     Openvpn3DirectivesWidget widget;
@@ -332,7 +413,7 @@ void Openvpn3DirectivesTest::removingARowRemovesOnlyThatEntry()
     table(&widget)->selectRow(rowOf(table(&widget), u"remote"_s, 0));
     button(&widget, u"openvpn3_directives_remove"_s)->click();
 
-    QCOMPARE(table(&widget)->rowCount(), 7);
+    QCOMPARE(table(&widget)->rowCount(), 6);
     QCOMPARE(widget.profile().toText(), QString(kProfileKept).replace(u"remote a.example.org 1194 udp\n"_s, QString()));
 }
 

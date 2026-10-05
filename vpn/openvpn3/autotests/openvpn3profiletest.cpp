@@ -14,8 +14,9 @@ using namespace Qt::Literals::StringLiterals;
 namespace
 {
 /** A profile as a file on disk has it: comments on lines of their own, after
- * directives, inside a @c <connection> scope, and characters that look like
- * one but are part of a value or of a payload. */
+ * directives, inside a @c <connection> scope, blank lines spacing the sections
+ * out, and characters that look like a comment but are part of a value or of a
+ * payload. */
 const auto kRich = QStringLiteral(
     "##\n"
     "# An office profile\n"
@@ -35,20 +36,23 @@ const auto kRich = QStringLiteral(
     "verify-x509-name \"C=NO, O=Example, CN=server\" subject\n"
     "<connection>\n"
     "# the failover entry\n"
+    "\n"
     "remote fallback.example.net 1194 udp\n"
     "http-proxy proxy.example.net 8080 # via the proxy\n"
     "</connection>\n"
     "<ca>\n"
     "-----BEGIN CERTIFICATE-----\n"
     "MIIBsyntheticTESTDATA # payload, not a comment\n"
+    "\n"
     "-----END CERTIFICATE-----\n"
     "</ca>\n"
     "key-direction 1\n"
     "some-directive-we-have-never-heard-of 1 2 3\n");
 
-/** kRich as this class keeps it: the comments are gone and nothing else is.
- * Blank lines stay, order and duplicates stay, quoting stays, and the lines
- * of the opaque @c <ca> payload are untouched. */
+/** kRich as this class keeps it: the formatting -- the comments and the blank
+ * lines -- is gone and nothing else is. Order and duplicates stay, quoting
+ * stays, and the lines of the opaque @c <ca> payload, the blank one included,
+ * are untouched. */
 const auto kRichKept = QStringLiteral(
     "client\n"
     "dev tun\n"
@@ -56,7 +60,6 @@ const auto kRichKept = QStringLiteral(
     "remote vpn1.example.net 1194 udp\n"
     "remote vpn2.example.net 443 tcp\n"
     "remote vpn1.example.net 1194 udp\n"
-    "\n"
     "auth-user-pass\n"
     "pull-filter ignore \"redirect-gateway\"\n"
     "setenv opt 'single quoted value'\n"
@@ -69,6 +72,7 @@ const auto kRichKept = QStringLiteral(
     "<ca>\n"
     "-----BEGIN CERTIFICATE-----\n"
     "MIIBsyntheticTESTDATA # payload, not a comment\n"
+    "\n"
     "-----END CERTIFICATE-----\n"
     "</ca>\n"
     "key-direction 1\n"
@@ -106,12 +110,16 @@ private Q_SLOTS:
         }
     }
 
-    void roundTripKeepsEverythingButComments_data();
-    void roundTripKeepsEverythingButComments();
+    void roundTripKeepsEverythingButFormatting_data();
+    void roundTripKeepsEverythingButFormatting();
     void commentsAreDropped_data();
     void commentsAreDropped();
-    void noEntryIsEverAComment();
+    void blankLinesAreDropped_data();
+    void blankLinesAreDropped();
+    void noEntryIsEverFormatting();
     void aScopeBodyNeverTakesAComment();
+    void aScopeBodyNeverTakesABlankLine();
+    void noMutatorCanPutABlankLineBack();
     void aMalformedCloserNeverBecomesAScopeBoundary();
     void parsesEntryKinds();
     void keepsDuplicatesInOrder();
@@ -147,7 +155,7 @@ private Q_SLOTS:
     void crlfIsVisibleAsTheDocumentsConvention();
 };
 
-void Openvpn3ProfileTest::roundTripKeepsEverythingButComments_data()
+void Openvpn3ProfileTest::roundTripKeepsEverythingButFormatting_data()
 {
     QTest::addColumn<QString>("text");
     QTest::addColumn<QString>("expected");
@@ -157,16 +165,21 @@ void Openvpn3ProfileTest::roundTripKeepsEverythingButComments_data()
     QTest::newRow("no trailing newline") << u"client\nremote a.example.net 1194"_s << u"client\nremote a.example.net 1194"_s;
     QTest::newRow("crlf") << u"client\r\nremote a.example.net 1194\r\n<ca>\r\nPEM\r\n</ca>\r\n"_s
                           << u"client\r\nremote a.example.net 1194\r\n<ca>\r\nPEM\r\n</ca>\r\n"_s;
+    // The whitespace around a directive is part of the line and stays; a line
+    // that is nothing but whitespace is not a line of the document at all.
     QTest::newRow("odd whitespace") << u"  client   \n\t remote   a.example.net    1194  \n\n\n"_s
-                                    << u"  client   \n\t remote   a.example.net    1194  \n\n\n"_s;
+                                    << u"  client   \n\t remote   a.example.net    1194  \n"_s;
     QTest::newRow("block without trailing newline") << u"client\n<ca>\nPEM\n</ca>"_s << u"client\n<ca>\nPEM\n</ca>"_s;
-    // Nothing but comments is nothing at all, and an empty document is one
+    // Nothing but formatting is nothing at all, and an empty document is one
     // this class can hand back.
     QTest::newRow("only comments") << u"# one\n; two\n"_s << QString();
     QTest::newRow("only comments, crlf") << u"# one\r\n; two\r\n"_s << QString();
+    QTest::newRow("only blank lines") << u"\n\n   \n\t\n"_s << QString();
+    QTest::newRow("only blank lines, crlf") << u"\r\n\r\n"_s << QString();
+    QTest::newRow("only formatting") << u"\n# one\n\n; two\n   \n"_s << QString();
 }
 
-void Openvpn3ProfileTest::roundTripKeepsEverythingButComments()
+void Openvpn3ProfileTest::roundTripKeepsEverythingButFormatting()
 {
     QFETCH(QString, text);
     QFETCH(QString, expected);
@@ -193,7 +206,6 @@ void Openvpn3ProfileTest::commentsAreDropped_data()
     QTest::newRow("comment is the whole last line, unterminated") << u"client\n# trailing"_s << u"client\n"_s;
     QTest::newRow("inline on the last line, unterminated") << u"client\ndev tun # why"_s << u"client\ndev tun"_s;
     QTest::newRow("crlf") << u"# gone\r\nclient\r\ndev tun # gone\r\n"_s << u"client\r\ndev tun\r\n"_s;
-    QTest::newRow("blank lines are not comments") << u"\n# gone\n\nclient\n"_s << u"\n\nclient\n"_s;
     QTest::newRow("inside a connection scope") << u"<connection>\n# gone\nremote a.example.net # gone\n</connection>\n"_s
                                                << u"<connection>\nremote a.example.net\n</connection>\n"_s;
     QTest::newRow("on an opening tag line") << u"<ca> # the CA\nPEM\n</ca>\n"_s << u"<ca>\nPEM\n</ca>\n"_s;
@@ -284,6 +296,106 @@ void Openvpn3ProfileTest::commentsAreDropped()
     QCOMPARE(Openvpn3Profile::fromText(expected).toText(), expected);
 }
 
+void Openvpn3ProfileTest::blankLinesAreDropped_data()
+{
+    QTest::addColumn<QString>("text");
+    QTest::addColumn<QString>("expected");
+
+    // -- what goes --
+    QTest::newRow("empty line") << u"client\n\nremote a.example.net\n"_s << u"client\nremote a.example.net\n"_s;
+    QTest::newRow("run of empty lines") << u"client\n\n\n\nremote a.example.net\n"_s << u"client\nremote a.example.net\n"_s;
+    QTest::newRow("leading and trailing") << u"\n\nclient\n\n"_s << u"client\n"_s;
+    QTest::newRow("spaces") << u"client\n   \nremote a.example.net\n"_s << u"client\nremote a.example.net\n"_s;
+    QTest::newRow("tabs") << u"client\n\t\t\nremote a.example.net\n"_s << u"client\nremote a.example.net\n"_s;
+    QTest::newRow("form feed and spaces") << u"client\n \f \nremote a.example.net\n"_s << u"client\nremote a.example.net\n"_s;
+    QTest::newRow("crlf") << u"client\r\n\r\nremote a.example.net\r\n"_s << u"client\r\nremote a.example.net\r\n"_s;
+    QTest::newRow("crlf, spaces") << u"client\r\n  \r\nremote a.example.net\r\n"_s << u"client\r\nremote a.example.net\r\n"_s;
+    QTest::newRow("a blank line after the last directive") << u"client\n\n"_s << u"client\n"_s;
+    // The terminator a nonempty directive needs is part of that directive and
+    // was never a line of its own, with or without a blank one after it.
+    QTest::newRow("a terminator is not a blank line") << u"client\n"_s << u"client\n"_s;
+    QTest::newRow("blank next to a comment") << u"\n# gone\n\nclient\n"_s << u"client\n"_s;
+    QTest::newRow("inside a connection scope") << u"<connection>\n\nremote a.example.net\n  \n</connection>\n"_s
+                                               << u"<connection>\nremote a.example.net\n</connection>\n"_s;
+    QTest::newRow("a connection scope of nothing but blank lines") << u"<connection>\n\n\n</connection>\n"_s << u"<connection>\n</connection>\n"_s;
+
+    // -- what stays --
+    //
+    // An opaque payload is content, not formatting: a blank line in a
+    // certificate or a key is a byte of the data, and so is an empty
+    // credential.
+    QTest::newRow("opaque payload") << u"<ca>\n\nPEM\n\n</ca>\n"_s << u"<ca>\n\nPEM\n\n</ca>\n"_s;
+    QTest::newRow("whitespace in an opaque payload") << u"<ca>\n   \nPEM\n</ca>\n"_s << u"<ca>\n   \nPEM\n</ca>\n"_s;
+    QTest::newRow("an empty password") << u"<auth-user-pass>\nalice\n\n</auth-user-pass>\n"_s << u"<auth-user-pass>\nalice\n\n</auth-user-pass>\n"_s;
+    QTest::newRow("an unknown payload") << u"<some-future-payload>\n\nkept\n\n</some-future-payload>\n"_s
+                                        << u"<some-future-payload>\n\nkept\n\n</some-future-payload>\n"_s;
+    QTest::newRow("a payload nested in a connection scope")
+        << u"<connection>\n\n<ca>\n\nPEM\n</ca>\n\n</connection>\n"_s << u"<connection>\n<ca>\n\nPEM\n</ca>\n</connection>\n"_s;
+    QTest::newRow("an unterminated block keeps its blank lines") << u"<ca>\n\nPEM\n\n"_s << u"<ca>\n\nPEM\n\n"_s;
+    // The whitespace a directive line is padded with is part of that line.
+    QTest::newRow("indentation is not a blank line") << u"   client   \n"_s << u"   client   \n"_s;
+    // A value made of Unicode separators is a value: they separate nothing for
+    // either lexer, so a line of them is a directive and not formatting. And
+    // '\v' is not whitespace for g_ascii_isspace(), which is what the
+    // backend's importer strips every line with, so it is not formatting here
+    // either -- the two have to agree on which lines a profile has.
+    QTest::newRow("a line of unicode whitespace") << u"client\n \nremote a.example.net\n"_s << u"client\n \nremote a.example.net\n"_s;
+    QTest::newRow("a line of vertical tabs") << u"client\n\v\nremote a.example.net\n"_s << u"client\n\v\nremote a.example.net\n"_s;
+}
+
+void Openvpn3ProfileTest::blankLinesAreDropped()
+{
+    QFETCH(QString, text);
+    QFETCH(QString, expected);
+
+    QCOMPARE(Openvpn3Profile::fromText(text).toText(), expected);
+    // Dropping them is idempotent: what came back has nothing left to drop,
+    // so storing it and loading it again changes nothing more.
+    QCOMPARE(Openvpn3Profile::fromText(expected).toText(), expected);
+    // And no number of further passes does either.
+    QString text2 = expected;
+    for (int pass = 0; pass < 3; ++pass) {
+        text2 = Openvpn3Profile::fromText(text2).toText();
+    }
+    QCOMPARE(text2, expected);
+}
+
+void Openvpn3ProfileTest::noMutatorCanPutABlankLineBack()
+{
+    // The document has no blank lines, so nothing done to it may write one.
+    // Reloading what it serializes is how that is checked: a blank line a
+    // mutator wrote would be dropped on the way back in, so the text would
+    // not survive the round trip -- which is exactly the row a user edited
+    // and then lost on the next load.
+    Openvpn3Profile profile = Openvpn3Profile::fromText(kRich);
+    // Everything the editor does to a document, in one pass over it.
+    profile.setDirective(u"cipher"_s, {u"AES-256-GCM"_s});
+    profile.setPresent(u"pull"_s, true);
+    profile.setArguments(profile.indexOf(u"dev"_s), {u"tap"_s});
+    profile.setArguments(profile.indexOf(u"key-direction"_s), {});
+    profile.setBlock(u"connection"_s, u"\nremote b.example.net\n\n"_s);
+    profile.setBody(profile.indexOf(u"ca"_s), u"\nNEW-CA\n"_s);
+    profile.append(Openvpn3Profile::directive(u"verb"_s));
+    profile.insert(0, Openvpn3Profile::directive(u"client"_s));
+    profile.move(0, 1);
+    profile.removeAt(0);
+    profile.removeAll(u"proto"_s);
+
+    const QString text = profile.toText();
+    // A blank line typed into a scope went the way one read from a file does;
+    // the one typed into the opaque payload is content and stayed.
+    QVERIFY(text.contains(u"<connection>\nremote b.example.net\n</connection>\n"_s));
+    QVERIFY(text.contains(u"<ca>\n\nNEW-CA\n</ca>\n"_s));
+    // Nothing between two directives is a blank line.
+    QVERIFY(!text.contains(u"\n\nclient"_s));
+    QVERIFY(!text.contains(u"\n\nverb"_s));
+    // And the document is a fixed point: a reload changes nothing. A blank
+    // line any of the above wrote would be dropped on the way back in, so the
+    // text would not come back the same.
+    QCOMPARE(Openvpn3Profile::fromText(text).toText(), text);
+    QCOMPARE(Openvpn3Profile::fromText(Openvpn3Profile::fromText(text).toText()).toText(), text);
+}
+
 void Openvpn3ProfileTest::aMalformedCloserNeverBecomesAScopeBoundary()
 {
     // The reason the line above is kept rather than repaired: the scope runs
@@ -305,18 +417,21 @@ void Openvpn3ProfileTest::aMalformedCloserNeverBecomesAScopeBoundary()
     QCOMPARE(again.remoteHosts(), profile.remoteHosts());
 }
 
-void Openvpn3ProfileTest::noEntryIsEverAComment()
+void Openvpn3ProfileTest::noEntryIsEverFormatting()
 {
-    // There is no comment entry to be had, so no table built from a profile
-    // can have a row for one -- whatever the document it was loaded from.
-    for (const QString &text : {kRich, u"# one\n; two\n"_s, u"client # trailing"_s}) {
+    // There is no comment entry and no blank entry to be had, so no table
+    // built from a profile can have a row for either -- whatever the document
+    // it was loaded from. Directive and Block are the only kinds there are.
+    for (const QString &text : {kRich, u"# one\n; two\n"_s, u"client # trailing"_s, u"\nclient\n\n"_s}) {
         const Openvpn3Profile profile = Openvpn3Profile::fromText(text);
         for (const Openvpn3Entry &entry : profile.entries()) {
-            QVERIFY(entry.isDirective() || entry.isBlock() || entry.kind == Openvpn3Entry::Blank);
+            QVERIFY(entry.isDirective() || entry.isBlock());
+            QVERIFY(!profile.sourceAt(profile.indexOfId(entry.id())).trimmed().isEmpty());
         }
     }
-    // Nothing is left of a document that was only ever comments.
+    // Nothing is left of a document that was only ever formatting.
     QVERIFY(Openvpn3Profile::fromText(u"# one\n; two\n"_s).isEmpty());
+    QVERIFY(Openvpn3Profile::fromText(u"\n\n   \n"_s).isEmpty());
     QCOMPARE(Openvpn3Profile::fromText(u"client # trailing"_s).toText(), u"client"_s);
 }
 
@@ -344,6 +459,28 @@ void Openvpn3ProfileTest::aScopeBodyNeverTakesAComment()
     QCOMPARE(Openvpn3Profile::block(u"key"_s, u"KEY # payload\n"_s).body, u"KEY # payload\n"_s);
 }
 
+void Openvpn3ProfileTest::aScopeBodyNeverTakesABlankLine()
+{
+    // The same for the blank lines a user spaces a <connection> body out with:
+    // the scope holds directives, and an entry that is not there after the
+    // next load is not an entry to keep now.
+    Openvpn3Profile profile = Openvpn3Profile::fromText(u"client\n<connection>\nremote a.example.net\n</connection>\n"_s);
+
+    profile.setBody(1, u"\nremote b.example.net\n   \nhttp-proxy proxy.example.net 8080\n\n"_s);
+    QCOMPARE(profile.toText(), u"client\n<connection>\nremote b.example.net\nhttp-proxy proxy.example.net 8080\n</connection>\n"_s);
+
+    // So does one in a scope built from scratch, or set by name.
+    QCOMPARE(Openvpn3Profile::block(u"connection"_s, u"\nremote c.example.net\n\n"_s).body, u"remote c.example.net\n"_s);
+    profile.setBlock(u"connection"_s, u"\n\nremote d.example.net\n"_s);
+    QCOMPARE(profile.toText(), u"client\n<connection>\nremote d.example.net\n</connection>\n"_s);
+
+    // An opaque payload is content, so every line of what is typed into it
+    // stays -- a blank one at either end of a key included.
+    profile.setBlock(u"key"_s, u"\nKEY\n\n"_s);
+    QVERIFY(profile.toText().contains(u"<key>\n\nKEY\n\n</key>\n"_s));
+    QCOMPARE(Openvpn3Profile::block(u"ca"_s, u"\nPEM\n"_s).body, u"\nPEM\n"_s);
+}
+
 void Openvpn3ProfileTest::parsesEntryKinds()
 {
     const Openvpn3Profile profile = Openvpn3Profile::fromText(kRich);
@@ -351,8 +488,10 @@ void Openvpn3ProfileTest::parsesEntryKinds()
     QCOMPARE(profile.at(0).kind, Openvpn3Entry::Directive);
     QCOMPARE(profile.at(0).name, QStringLiteral("client"));
     QVERIFY(profile.at(0).arguments.isEmpty());
-    QCOMPARE(profile.at(6).kind, Openvpn3Entry::Blank);
-    QCOMPARE(profile.at(7).name, QStringLiteral("auth-user-pass"));
+    // The blank line between the remotes and this is not an entry, so the
+    // directive below it follows the last remote straight away.
+    QCOMPARE(profile.at(6).kind, Openvpn3Entry::Directive);
+    QCOMPARE(profile.at(6).name, QStringLiteral("auth-user-pass"));
     QCOMPARE(profile.value(QStringLiteral("dev")), QStringLiteral("tun"));
     // A hash inside quotes is part of the value, not the start of a comment.
     QCOMPARE(profile.arguments(QStringLiteral("setenv")), QStringList({QStringLiteral("opt"), QStringLiteral("single quoted value")}));
@@ -380,9 +519,10 @@ void Openvpn3ProfileTest::keepsBlocksVerbatim()
 {
     const Openvpn3Profile profile = Openvpn3Profile::fromText(kRich);
 
-    // Including the hash in there, which is payload and not a comment.
+    // Including the hash in there and the blank line below it, which are
+    // payload and not formatting.
     QCOMPARE(profile.blockBody(QStringLiteral("ca")),
-             QStringLiteral("-----BEGIN CERTIFICATE-----\nMIIBsyntheticTESTDATA # payload, not a comment\n-----END CERTIFICATE-----\n"));
+             QStringLiteral("-----BEGIN CERTIFICATE-----\nMIIBsyntheticTESTDATA # payload, not a comment\n\n-----END CERTIFICATE-----\n"));
     const int index = profile.indexOf(QStringLiteral("ca"));
     QVERIFY(index >= 0);
     QVERIFY(profile.at(index).isBlock());
@@ -446,8 +586,8 @@ void Openvpn3ProfileTest::editingOneEntryLeavesTheOthersAlone()
     QCOMPARE(text.count(QStringLiteral("remote vpn1.example.net 1194 udp\n")), 2);
     QVERIFY(text.contains(QStringLiteral("remote vpn3.example.net 443 tcp\n")));
     QVERIFY(!text.contains(QStringLiteral("vpn2.example.net")));
-    // Everything else, the blank line and the unknown directive included, is
-    // still byte for byte what the document was once its comments were gone.
+    // Everything else, the unknown directive included, is still byte for byte
+    // what the document was once its formatting was gone.
     QCOMPARE(text.replace(QStringLiteral("remote vpn3.example.net 443 tcp"), QStringLiteral("remote vpn2.example.net 443 tcp")), kRichKept);
 }
 
@@ -521,8 +661,8 @@ void Openvpn3ProfileTest::entriesCanBeInsertedMovedAndRemoved()
     profile.move(remotes.at(1), remotes.at(0));
     QCOMPARE(profile.toText(), QStringLiteral("client\nremote b.example.net\nremote a.example.net\n"));
 
-    profile.insert(0, Openvpn3Profile::blank());
-    QVERIFY(profile.toText().startsWith(QStringLiteral("\nclient\n")));
+    profile.insert(0, Openvpn3Profile::directive(QStringLiteral("pull")));
+    QVERIFY(profile.toText().startsWith(QStringLiteral("pull\nclient\n")));
 
     profile.append(Openvpn3Profile::directive(QStringLiteral("remote"), {QStringLiteral("c.example.net")}));
     QCOMPARE(profile.indexesOf(QStringLiteral("remote")).size(), 3);
@@ -720,7 +860,7 @@ void Openvpn3ProfileTest::entriesKeepTheirIdentityWhileTheDocumentChanges()
     profile.setArguments(remotes.at(0), {u"c.example.net"_s});
     QCOMPARE(profile.at(remotes.at(0)).id(), first);
 
-    profile.insert(0, Openvpn3Profile::blank());
+    profile.insert(0, Openvpn3Profile::directive(u"pull"_s));
     QCOMPARE(profile.indexOfId(first), 2);
     QCOMPARE(profile.indexOfId(second), 4);
 
