@@ -72,7 +72,7 @@ private Q_SLOTS:
 
     void importInlinesEverythingTheProfileReferred();
     void importLiftsCredentialsOutOfTheProfile();
-    void importDropsTheCommentsTheFileHad();
+    void importDropsTheFormattingTheFileHad();
     void importOfAMissingFileChangesNothing();
     void importedConnectionUsesTheSecretLayout();
     void importedCredentialsFollowTheProfileIntoTheWallet();
@@ -260,24 +260,30 @@ void Openvpn3ImportTest::importLiftsCredentialsOutOfTheProfile()
     QCOMPARE(import.suggestedId(), u"office"_s);
 }
 
-void Openvpn3ImportTest::importDropsTheCommentsTheFileHad()
+void Openvpn3ImportTest::importDropsTheFormattingTheFileHad()
 {
     if (!backendAvailable()) {
         QSKIP("the openvpn3 backend's libnm plugin is not installed");
     }
     // office.ovpn is a file as people write them: a banner at the top, a note
-    // on the failover entry.  openvpn3 ignores those, and the stored profile
-    // is not a file anybody opens again, so the backend's normalizer drops
-    // them and the editor has no rows it cannot act on.
+    // on the failover entry, blank lines spacing the sections out.  openvpn3
+    // reads nothing from any of that, and the stored profile is not a file
+    // anybody opens again, so the backend's normalizer drops it and the editor
+    // has no rows it cannot act on.
     const Openvpn3Import import = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s));
     QVERIFY2(import.isValid(), qPrintable(import.errorMessage()));
 
     const Openvpn3Profile profile = Openvpn3Profile::fromText(import.profile());
     for (const Openvpn3Entry &entry : profile.entries()) {
-        QVERIFY(entry.isDirective() || entry.isBlock() || entry.kind == Openvpn3Entry::Blank);
+        QVERIFY(entry.isDirective() || entry.isBlock());
     }
     QVERIFY(!import.profile().contains(u"Synthetic test profile"_s));
     QVERIFY(!import.profile().contains(u"failover entry, kept verbatim"_s));
+    // The file has blank lines at the top level, inside and around its
+    // sections; none of them survives, and nothing is left before the first
+    // directive.
+    QVERIFY(!import.profile().contains(u"\n\n"_s));
+    QVERIFY(import.profile().startsWith(u"client\n"_s));
     // The directives those comments sat among are all still there, in order.
     QCOMPARE(profile.value(u"dev"_s), u"tun"_s);
     QVERIFY(profile.blockBody(u"connection"_s).contains(u"remote fallback.example.org 1194 udp"_s));

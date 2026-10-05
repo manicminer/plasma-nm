@@ -42,7 +42,6 @@ const auto kProfile = QStringLiteral(
     "port 1194\n"
     "remote vpn1.example.org 1194 udp\n"
     "remote vpn2.example.org 443 tcp\n"
-    "\n"
     "<connection>\n"
     "remote fallback.example.org 1194 udp\n"
     "</connection>\n"
@@ -55,23 +54,31 @@ const auto kProfile = QStringLiteral(
     "-----END CERTIFICATE-----\n"
     "</ca>\n");
 
-/** A connection written before comments were dropped, or a file that still
- * has them: what the editor has to cope with without showing them. */
+/** A connection written before the formatting was dropped, or a file that
+ * still has it: comments and blank lines the editor has to cope with without
+ * showing them. */
 const auto kCommented = QStringLiteral(
     "##\n"
     "# Synthetic test profile\n"
     "##\n"
+    "\n"
     "client\n"
     "remote vpn1.example.org 1194 udp # the main one\n"
     "; and a semicolon comment\n"
+    "   \n"
     "setenv hash \"a # inside quotes\"\n"
+    "\n"
     "<ca>\n"
     "-----BEGIN CERTIFICATE-----\n"
     "SYNTHETIC # payload, not a comment\n"
+    "\n"
     "-----END CERTIFICATE-----\n"
-    "</ca>\n");
+    "</ca>\n"
+    "\n");
 
-/** kCommented once it has been through the editor. */
+/** kCommented once it has been through the editor: the comments and the blank
+ * lines between directives are gone, the blank line inside the certificate is
+ * payload and stays. */
 const auto kCommentedKept = QStringLiteral(
     "client\n"
     "remote vpn1.example.org 1194 udp\n"
@@ -79,6 +86,7 @@ const auto kCommentedKept = QStringLiteral(
     "<ca>\n"
     "-----BEGIN CERTIFICATE-----\n"
     "SYNTHETIC # payload, not a comment\n"
+    "\n"
     "-----END CERTIFICATE-----\n"
     "</ca>\n");
 
@@ -508,7 +516,10 @@ private Q_SLOTS:
     void directiveTableEditsReachTheStoredProfile();
     void directiveTableKeepsEntriesTheEditorDoesNotUnderstand();
     void commentsInAStoredProfileAreNeitherShownNorSavedBack();
+    void blankLinesInAStoredProfileAreNeitherShownNorSavedBack();
     void aCommentTypedIntoAScopeBodyIsNotSaved();
+    void aBlankLineTypedIntoTheSourceIsNotSaved();
+    void aBlankLineTypedIntoAScopeBodyIsNotSaved();
     void aBlockBodyCanBeEditedInTheTable();
 
     void removingARemoteDoesNotMoveAnothersExtraArguments();
@@ -970,15 +981,17 @@ void Openvpn3WidgetTest::directiveTableKeepsEntriesTheEditorDoesNotUnderstand()
     tabs(&widget)->setCurrentIndex(1);
     QTableWidget *table = directivesTable(&widget);
 
-    // Every line of the profile is a row, blank lines included.
+    // Every entry of the profile is a row, and every row is an entry: the
+    // formatting is not of a kind the table has.
     QStringList kinds;
     for (int row = 0; row < table->rowCount(); ++row) {
         kinds.append(table->item(row, 0)->text());
     }
     QVERIFY(!kinds.contains(u"Comment"_s));
-    QVERIFY(kinds.contains(u"Blank line"_s));
+    QVERIFY(!kinds.contains(u"Blank line"_s));
     QVERIFY(kinds.contains(u"Block"_s));
     QVERIFY(kinds.contains(u"Directive"_s));
+    QCOMPARE(QSet<QString>(kinds.cbegin(), kinds.cend()), QSet<QString>({u"Directive"_s, u"Block"_s}));
 
     // Switching away and back changes nothing.
     tabs(&widget)->setCurrentIndex(0);
@@ -988,9 +1001,9 @@ void Openvpn3WidgetTest::directiveTableKeepsEntriesTheEditorDoesNotUnderstand()
 
 void Openvpn3WidgetTest::commentsInAStoredProfileAreNeitherShownNorSavedBack()
 {
-    // A connection imported by an older build still carries its comments.
-    // Opening it is not supposed to show rows for them, and saving it is not
-    // supposed to write them back.
+    // A connection imported by an older build still carries its comments and
+    // its blank lines.  Opening it is not supposed to show rows for them, and
+    // saving it is not supposed to write them back.
     OpenVpn3SettingWidget widget(legacySetting(kCommented));
     tabs(&widget)->setCurrentIndex(1);
     QTableWidget *table = directivesTable(&widget);
@@ -998,12 +1011,13 @@ void Openvpn3WidgetTest::commentsInAStoredProfileAreNeitherShownNorSavedBack()
     QCOMPARE(table->rowCount(), 4); // client, remote, setenv, <ca>
     for (int row = 0; row < table->rowCount(); ++row) {
         QVERIFY(table->item(row, 0)->text() != u"Comment"_s);
+        QVERIFY(table->item(row, 0)->text() != u"Blank line"_s);
     }
     QVERIFY(rowOfDirective(table, u"client"_s) >= 0);
     QVERIFY(rowOfDirective(table, u"ca"_s) >= 0);
 
-    // The quoted hash is a value and the one in the certificate is payload;
-    // only the comments went.
+    // The quoted hash is a value, the one in the certificate is payload and so
+    // is the blank line in there; only the formatting between directives went.
     QCOMPARE(widget.profileText(), kCommentedKept);
     QCOMPARE(storedProfileOf(widget.setting()), kCommentedKept);
 
@@ -1029,6 +1043,73 @@ void Openvpn3WidgetTest::aCommentTypedIntoAScopeBodyIsNotSaved()
     auto *body = widget.findChild<QPlainTextEdit *>(u"openvpn3_directives_body"_s);
     QVERIFY(body);
     body->setPlainText(u"# mine\nremote b.example.org 443 tcp # here\n"_s);
+
+    const auto expected = u"client\n<connection>\nremote b.example.org 443 tcp\n</connection>\n"_s;
+    QCOMPARE(widget.profileText(), expected);
+    QCOMPARE(storedProfileOf(widget.setting()), expected);
+}
+
+void Openvpn3WidgetTest::blankLinesInAStoredProfileAreNeitherShownNorSavedBack()
+{
+    // The same for a connection that still has blank lines in it: no rows for
+    // them, and saving does not write them back.  The ones inside the opaque
+    // payload are content and both the table and the save path leave them be.
+    const auto stored = u"\nclient\n\nremote vpn1.example.org 1194 udp\n   \n<ca>\n\nPEM\n\n</ca>\n\n"_s;
+    const auto kept = u"client\nremote vpn1.example.org 1194 udp\n<ca>\n\nPEM\n\n</ca>\n"_s;
+    OpenVpn3SettingWidget widget(legacySetting(stored));
+    tabs(&widget)->setCurrentIndex(1);
+    QTableWidget *table = directivesTable(&widget);
+
+    QCOMPARE(table->rowCount(), 3); // client, remote, <ca>
+    for (int row = 0; row < table->rowCount(); ++row) {
+        QVERIFY(table->item(row, 0)->text() != u"Blank line"_s);
+        QVERIFY(!table->item(row, 1)->text().isEmpty());
+    }
+    QCOMPARE(widget.profileText(), kept);
+    QCOMPARE(storedProfileOf(widget.setting()), kept);
+
+    // Visiting every page and coming back is not an edit, and saving again
+    // changes nothing more: the document is a fixed point.
+    for (int tab = 0; tab < tabs(&widget)->count(); ++tab) {
+        tabs(&widget)->setCurrentIndex(tab);
+    }
+    QCOMPARE(storedProfileOf(widget.setting()), kept);
+    OpenVpn3SettingWidget again(legacySetting(storedProfileOf(widget.setting())));
+    QCOMPARE(storedProfileOf(again.setting()), kept);
+}
+
+void Openvpn3WidgetTest::aBlankLineTypedIntoTheSourceIsNotSaved()
+{
+    OpenVpn3SettingWidget widget(legacySetting());
+    QPlainTextEdit *source = sourceEdit(&widget);
+    QVERIFY(source);
+
+    tabs(&widget)->setCurrentIndex(2);
+    source->setPlainText(u"\nclient\n\nremote typed.example.org 1234 tcp\n  \n"_s);
+
+    // The profile is not a file anybody will open again, so a blank line typed
+    // into it has nowhere to live; the rest of the text is taken as typed.
+    QCOMPARE(storedProfileOf(widget.setting()), u"client\nremote typed.example.org 1234 tcp\n"_s);
+
+    // And the page shows what was actually kept, rather than leaving the user
+    // looking at lines the connection does not have.
+    tabs(&widget)->setCurrentIndex(0);
+    QCOMPARE(source->toPlainText(), u"client\nremote typed.example.org 1234 tcp\n"_s);
+}
+
+void Openvpn3WidgetTest::aBlankLineTypedIntoAScopeBodyIsNotSaved()
+{
+    OpenVpn3SettingWidget widget(legacySetting(u"client\n<connection>\nremote a.example.org 1194 udp\n</connection>\n"_s));
+    tabs(&widget)->setCurrentIndex(1);
+    QTableWidget *table = directivesTable(&widget);
+
+    const int row = rowOfDirective(table, u"connection"_s);
+    QVERIFY(row >= 0);
+    table->selectRow(row);
+
+    auto *body = widget.findChild<QPlainTextEdit *>(u"openvpn3_directives_body"_s);
+    QVERIFY(body);
+    body->setPlainText(u"\nremote b.example.org 443 tcp\n\n"_s);
 
     const auto expected = u"client\n<connection>\nremote b.example.org 443 tcp\n</connection>\n"_s;
     QCOMPARE(widget.profileText(), expected);

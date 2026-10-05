@@ -41,6 +41,26 @@ bool isAsciiSpace(QChar c)
     return c == u' ' || c == u'\t' || c == u'\n' || c == u'\v' || c == u'\f' || c == u'\r';
 }
 
+/** A line of nothing: formatting rather than a directive, and therefore no
+ * entry of the document at all.
+ *
+ * What counts as nothing is what the backend's importer strips a line down to
+ * with @c g_strchug() and @c chomp_separators(), both of which go by
+ * @c g_ascii_isspace(). That is @c isAsciiSpace() above less @c '\\v', which
+ * GLib -- unlike C's @c isspace() -- does not count: so a line of vertical
+ * tabs is a value for the importer, and has to stay a value here too, or the
+ * two disagree about which lines a profile has. Unicode separators are not
+ * whitespace for either of them, so a line of @c U+00A0 is a value as well. */
+bool isBlankLine(const QString &line)
+{
+    for (const QChar c : line) {
+        if (c != u' ' && c != u'\t' && c != u'\n' && c != u'\f' && c != u'\r') {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool isOpeningTag(const QString &stripped)
 {
     return stripped.size() > 2 && stripped.startsWith(u'<') && stripped.endsWith(u'>') && !stripped.startsWith(QLatin1String("</"));
@@ -169,10 +189,11 @@ QString withoutComment(const QString &line, int cut)
     return kept.isEmpty() ? QString() : kept + terminator;
 }
 
-/** A @c <connection> body with the comments among its directives dropped.
- * Any other block's body is opaque payload -- a certificate, a key, a
- * credential -- and comes back exactly as it was given. */
-QString bodyWithoutComments(const QString &name, const QString &body)
+/** A @c <connection> body with the formatting among its directives -- the
+ * comments and the blank lines -- dropped. Any other block's body is opaque
+ * payload -- a certificate, a key, a credential -- and comes back exactly as
+ * it was given, blank lines and all. */
+QString normalizedBody(const QString &name, const QString &body)
 {
     return isOptionScope(name) ? Openvpn3Profile::fromText(body).toText() : body;
 }
@@ -281,11 +302,15 @@ Openvpn3Profile Openvpn3Profile::fromText(const QString &text)
 
     for (int i = 0; i < lines.size(); ++i) {
         const QString &raw = lines.at(i);
-        // A comment is not an entry and never reaches one: a line that is
-        // only a comment is skipped, and one on a directive is cut off the
-        // source the entry keeps.  The lines of an opaque <tag> payload are
-        // content rather than directives and are not read as lines at all --
-        // the block below swallows them whole.
+        // Formatting is not an entry and never reaches one: a line that is
+        // only a comment or only whitespace is skipped, and a comment on a
+        // directive is cut off the source the entry keeps.  The lines of an
+        // opaque <tag> payload are content rather than formatting and are not
+        // read as lines at all -- the block below swallows them whole, so a
+        // blank line in a certificate or an empty credential is untouched.
+        if (isBlankLine(raw)) {
+            continue;
+        }
         const int comment = commentStart(raw);
         QString line = raw;
         if (comment >= 0) {
@@ -310,9 +335,7 @@ Openvpn3Profile Openvpn3Profile::fromText(const QString &text)
         entry.m_verbatim = true;
         entry.m_source = line;
 
-        if (stripped.isEmpty()) {
-            entry.kind = Openvpn3Entry::Blank;
-        } else if (isOpeningTag(stripped)) {
+        if (isOpeningTag(stripped)) {
             entry.kind = Openvpn3Entry::Block;
             entry.name = stripped.mid(1, stripped.size() - 2);
             const QString closing = QLatin1String("</") + entry.name + QLatin1Char('>');
@@ -327,10 +350,10 @@ Openvpn3Profile Openvpn3Profile::fromText(const QString &text)
                 body += lines.at(end);
             }
             if (end < lines.size()) {
-                // A scope's lines are directives, so the comments among them
-                // are comments. Parsing the body is how they go, and it
+                // A scope's lines are directives, so the formatting among them
+                // is formatting. Parsing the body is how it goes, and it
                 // leaves a block nested in here opaque, payload and all.
-                body = bodyWithoutComments(entry.name, body);
+                body = normalizedBody(entry.name, body);
                 entry.body = body;
                 entry.m_source = line + body + lines.at(end);
                 i = end;
@@ -356,8 +379,6 @@ Openvpn3Profile Openvpn3Profile::fromText(const QString &text)
 QString Openvpn3Profile::render(const Openvpn3Entry &entry)
 {
     switch (entry.kind) {
-    case Openvpn3Entry::Blank:
-        return QStringLiteral("\n");
     case Openvpn3Entry::Block: {
         QString text = u'<' + entry.name + QLatin1String(">\n");
         text += entry.body;
@@ -574,9 +595,9 @@ void Openvpn3Profile::setBody(int index, const QString &body)
 {
     Openvpn3Entry &entry = m_entries[index];
     // A <connection> body is the scope's directives however it arrives, so a
-    // comment put in by hand goes the same way one read from a file does.
-    // Keeping it would save an edit that vanishes on the next load.
-    const QString kept = bodyWithoutComments(entry.name, body);
+    // comment or a blank line put in by hand goes the same way one read from a
+    // file does. Keeping it would save an edit that vanishes on the next load.
+    const QString kept = normalizedBody(entry.name, body);
     if (entry.body == kept) {
         return;
     }
@@ -663,13 +684,6 @@ Openvpn3Entry Openvpn3Profile::block(const QString &name, const QString &body)
     Openvpn3Entry entry;
     entry.kind = Openvpn3Entry::Block;
     entry.name = name;
-    entry.body = bodyWithoutComments(name, body);
-    return entry;
-}
-
-Openvpn3Entry Openvpn3Profile::blank()
-{
-    Openvpn3Entry entry;
-    entry.kind = Openvpn3Entry::Blank;
+    entry.body = normalizedBody(name, body);
     return entry;
 }

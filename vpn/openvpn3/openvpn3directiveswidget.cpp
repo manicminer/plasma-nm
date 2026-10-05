@@ -33,8 +33,6 @@ QString kindLabel(const Openvpn3Entry &entry)
         return i18nc("@item an OpenVPN configuration directive", "Directive");
     case Openvpn3Entry::Block:
         return i18nc("@item an inline <tag>…</tag> block in an OpenVPN profile", "Block");
-    case Openvpn3Entry::Blank:
-        return i18nc("@item an empty line in an OpenVPN profile", "Blank line");
     }
     return QString();
 }
@@ -167,10 +165,11 @@ void Openvpn3DirectivesWidget::fillRow(int row, const Openvpn3Entry &entry)
     kind->setText(kindLabel(entry));
     kind->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
 
+    // Every entry there is has a name, and it is the name that says what the
+    // entry is, so every row's is editable.
     QTableWidgetItem *name = take(NameColumn);
     name->setText(entry.name);
-    const bool nameEditable = entry.isDirective() || entry.isBlock();
-    name->setFlags(nameEditable ? (Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable) : (Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+    name->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
 
     QTableWidgetItem *arguments = take(ArgumentsColumn);
     switch (entry.kind) {
@@ -182,10 +181,6 @@ void Openvpn3DirectivesWidget::fillRow(int row, const Openvpn3Entry &entry)
         arguments->setText(i18ncp("@item:intable the contents of an inline block", "%1 line", "%1 lines", entry.body.count(QLatin1Char('\n'))));
         arguments->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         break;
-    case Openvpn3Entry::Blank:
-        arguments->setText(QString());
-        arguments->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-        break;
     }
 }
 
@@ -195,12 +190,25 @@ void Openvpn3DirectivesWidget::onCellChanged(int row, int column)
         return;
     }
     const Openvpn3Entry entry = m_profile.at(row);
-    const QString text = m_table->item(row, column) ? m_table->item(row, column)->text() : QString();
+    QTableWidgetItem *item = m_table->item(row, column);
+    const QString text = item ? item->text() : QString();
 
-    if (column == NameColumn && (entry.isDirective() || entry.isBlock())) {
-        Openvpn3Entry updated = entry;
-        updated.name = text.trimmed();
-        m_profile.replace(row, entry.isBlock() ? Openvpn3Profile::block(updated.name, entry.body) : Openvpn3Profile::directive(updated.name, entry.arguments));
+    if (column == NameColumn) {
+        const QString name = text.trimmed();
+        if (name.isEmpty()) {
+            // A nameless entry is a line with nothing on it, which the profile
+            // does not keep: the row and its arguments would be gone the next
+            // time the connection was loaded. So clearing a name is no edit at
+            // all, and the cell goes back to saying what the entry is.
+            if (item) {
+                const bool wasUpdating = m_updating;
+                m_updating = true;
+                item->setText(entry.name);
+                m_updating = wasUpdating;
+            }
+            return;
+        }
+        m_profile.replace(row, entry.isBlock() ? Openvpn3Profile::block(name, entry.body) : Openvpn3Profile::directive(name, entry.arguments));
     } else if (column == ArgumentsColumn && entry.isDirective()) {
         m_profile.setArguments(row, Openvpn3Profile::splitArguments(text));
     } else {

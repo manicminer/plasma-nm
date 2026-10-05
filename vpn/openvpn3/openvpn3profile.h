@@ -16,13 +16,13 @@
  *
  * Entries keep the source they were parsed from. An entry that nothing has
  * changed is written back exactly as it came in, which is what makes a round
- * trip lossless but for the comments: unknown directives, odd quoting,
+ * trip lossless but for the formatting: unknown directives, odd quoting,
  * duplicate remotes and @c <connection> blocks all survive it even though the
  * editor has no idea what they mean.
  *
- * There is no comment entry. A comment is not something openvpn3 reads or
- * this editor can do anything with, so Openvpn3Profile::fromText() drops it
- * rather than keep a row nothing can act on; see that function.
+ * There is no comment entry and no blank entry. Neither is something openvpn3
+ * reads or this editor can do anything with, so Openvpn3Profile::fromText()
+ * drops both rather than keep a row nothing can act on; see that function.
  */
 class Openvpn3Entry
 {
@@ -30,11 +30,10 @@ public:
     enum Kind {
         Directive, //!< @c name [arguments...]
         Block, //!< @c <name> ... @c </name>, body kept verbatim
-        Blank,
     };
 
     Kind kind = Directive;
-    //! Directive or block name; empty for blank lines.
+    //! Directive or block name.
     QString name;
     //! Arguments with their quoting removed.
     QStringList arguments;
@@ -76,7 +75,7 @@ private:
     static quint64 nextId();
 
     //! The source this entry was parsed from, minus any comment on it,
-    //! terminator included.
+    //! terminator included. Never blank: a blank line is no entry.
     QString m_source;
     //! False once something changed it; then it is rendered instead.
     bool m_verbatim = false;
@@ -92,38 +91,48 @@ private:
  * list of directives the editor knows about -- an entry it does not understand
  * is simply an entry it does not touch.
  *
- * Comments are the one thing this does not keep, and the one thing reading a
- * profile changes about it; see fromText().
+ * The formatting -- comments and blank lines -- is the one thing this does not
+ * keep, and the one thing reading a profile changes about it; see fromText().
  */
 class Openvpn3Profile
 {
 public:
     /**
-     * Parses @p text, dropping the comments.
+     * Parses @p text, dropping the formatting: the comments and the blank
+     * lines.
      *
-     * Everything else is kept: directive order, repeated directives, blank
-     * lines, quoting, and whatever @c <tag> blocks the profile has. A line
-     * that is nothing but a comment becomes no entry at all, and a comment
-     * after a directive is cut off the entry's source, so neither can come
-     * back out of toText(). A profile that was only ever comments parses to
-     * an empty document.
+     * Everything else is kept: directive order, repeated directives, quoting,
+     * the whitespace a directive line is padded with, and whatever @c <tag>
+     * blocks the profile has. A line that is nothing but a comment, or nothing
+     * but whitespace, becomes no entry at all, and a comment after a directive
+     * is cut off the entry's source, so none of it can come back out of
+     * toText(). A profile that was only ever formatting parses to an empty
+     * document.
      *
      * A @c # or @c ; starts a comment when it is unquoted, unescaped and at
      * the start of a word -- what OpenVPN 2's @c parse_line() and openvpn3's
      * @c OptionList::LexComment agree on. One inside quotes, escaped with a
-     * backslash or glued to the middle of a word is part of a value and
-     * stays, as do the lines of an opaque payload (@c <ca>, @c <key>, an
-     * unknown @c <tag>), which are content rather than directives. A
-     * @c <connection> scope holds directives, so the comments among those go
-     * too, while a block nested inside it stays opaque.
+     * backslash or glued to the middle of a word is part of a value and stays.
      *
-     * Keep this in step with @c comment_start() in the backend's
-     * ovpn-import.c, which does the same to a profile on import.
+     * A line is blank when it holds nothing but the whitespace the backend's
+     * importer strips a line with; see @c isBlankLine() in the implementation.
+     * A line of @c U+00A0 is a value rather than formatting, and so is one of
+     * @c \\v, which @c g_ascii_isspace() does not count as whitespace.
+     *
+     * The lines of an opaque payload (@c <ca>, @c <key>, an inline
+     * @c <auth-user-pass>, an unknown @c <tag>) are content rather than
+     * formatting and are never inspected, so a blank line in a certificate or
+     * an empty credential survives byte for byte. A @c <connection> scope
+     * holds directives, so the formatting among those goes too, while a block
+     * nested inside it stays opaque.
+     *
+     * Keep this in step with @c comment_start() and @c strip_separators() in
+     * the backend's ovpn-import.c, which do the same to a profile on import.
      */
     static Openvpn3Profile fromText(const QString &text);
 
     /** The profile text. Byte for byte the input of fromText() but for the
-     * comments it dropped, and only changed entries are re-rendered. */
+     * formatting it dropped, and only changed entries are re-rendered. */
     QString toText() const;
 
     bool isEmpty() const
@@ -216,8 +225,8 @@ public:
     //! Replaces the arguments of one entry and nothing else.
     void setArguments(int index, const QStringList &arguments);
     /** Replaces the body of one block and nothing else. A @c <connection>
-     * body holds directives, so the comments among them go the way
-     * fromText() takes them; any other body is opaque payload and is stored
+     * body holds directives, so the formatting among them goes the way
+     * fromText() takes it; any other body is opaque payload and is stored
      * byte for byte. */
     void setBody(int index, const QString &body);
     void replace(int index, const Openvpn3Entry &entry);
@@ -239,7 +248,6 @@ public:
     static Openvpn3Entry directive(const QString &name, const QStringList &arguments = {});
     //! A @c <name> block; its body is treated as setBody() treats one.
     static Openvpn3Entry block(const QString &name, const QString &body);
-    static Openvpn3Entry blank();
 
     /** Splits a directive line the way OpenVPN does: double quotes allow
      * backslash escapes, single quotes are literal, an unquoted @c # or @c ;
